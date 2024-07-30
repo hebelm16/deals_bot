@@ -76,13 +76,13 @@ class DBManager:
         self.ofertas_cache[oferta['id']] = oferta
 
     def limpiar_ofertas_antiguas(self) -> int:
-    tiempo_limite = time.time() - 7 * 24 * 3600  # 7 días
-    with sqlite3.connect(self.database) as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM ofertas WHERE timestamp < ?", (tiempo_limite,))
-        ofertas_eliminadas = c.rowcount
-        conn.commit()
-    return ofertas_eliminadas
+        tiempo_limite = time.time() - 7 * 24 * 3600  # 7 días
+        with sqlite3.connect(self.database) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM ofertas WHERE timestamp < ?", (tiempo_limite,))
+            ofertas_eliminadas = c.rowcount
+            conn.commit()
+        return ofertas_eliminadas
 
     def actualizar_estructura_db(self) -> None:
         with sqlite3.connect(self.database) as conn:
