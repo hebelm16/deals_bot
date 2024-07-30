@@ -1,7 +1,7 @@
 import psycopg2
 from psycopg2.extras import DictCursor
 import os
-from typing import Dict, Any
+from typing import List, Dict, Any
 from cachetools import TTLCache
 import time
 import logging
