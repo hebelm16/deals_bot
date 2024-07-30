@@ -3,6 +3,9 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any
 
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, ContextTypes, CallbackQueryHandler
+
 from config import Config
 from db_manager import DBManager
 from scraper import SlickdealsScraper, DealsnewsScraper
