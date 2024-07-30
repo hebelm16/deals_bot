@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Dict, Any
+from typing import Dict, Any, List
 from cachetools import TTLCache
 import time
 import logging
