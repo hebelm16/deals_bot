@@ -1,5 +1,5 @@
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackContext, CallbackQueryHandler, Application
+from telegram.ext import Application, CallbackContext, CallbackQueryHandler
 from typing import Dict, Any
 import logging
 from retrying import retry
@@ -59,7 +59,8 @@ class TelegramBot:
         
         await query.edit_message_text(text=mensaje, parse_mode='Markdown')
 
-def setup_bot(application: Application, channel_id: str):
-    bot = TelegramBot(application.bot.token, channel_id)
+def setup_bot(token: str, channel_id: str) -> Application:
+    application = Application.builder().token(token).build()
+    bot = TelegramBot(token, channel_id)
     application.add_handler(CallbackQueryHandler(bot.manejar_callback_cupon, pattern='^copiar_cupon:'))
-    return bot
+    return application, bot
