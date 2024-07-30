@@ -1,0 +1,13 @@
+python-telegram-bot==20.3
+requests==2.31.0
+beautifulsoup4==4.12.2
+cachetools==5.3.1
+retrying==1.3.4
+psycopg2-binary==2.9.6
+schedule==1.1.0
+
+pytz==2023.3  # Si manejas zonas horarias
+python-dotenv==1.0.0  # Si usas archivos .env para configuración
+aiohttp==3.8.4  # Si haces solicitudes HTTP asíncronas
+
+
