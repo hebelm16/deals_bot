@@ -22,8 +22,7 @@ class OfertasBot:
             'dealnews': {'url': self.config.DEALSNEWS_URL, 'tag': "#DealNews", 'habilitado': True}
         }
         self.scrapers = self.init_scrapers()
-        self.application = setup_bot(self.config.TOKEN, self.config.CHANNEL_ID)
-        self.telegram_bot = TelegramBot(self.config.TOKEN, self.config.CHANNEL_ID)
+        self.application, self.telegram_bot = setup_bot(self.config.TOKEN, self.config.CHANNEL_ID)
         self.max_ofertas_por_ejecucion = 15  # Aumentado a 15 ofertas por ejecución
 
     def init_scrapers(self):
@@ -71,6 +70,11 @@ class OfertasBot:
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling()
+
+        self.application.add_handler(CommandHandler("estado", self.obtener_estado))
+        self.application.add_handler(CommandHandler("habilitar", self.habilitar_fuente))
+        self.application.add_handler(CommandHandler("deshabilitar", self.deshabilitar_fuente))
+        self.application.add_handler(CallbackQueryHandler(self.manejar_callback_fuente))
 
         while True:
             try:
