@@ -16,7 +16,7 @@ class TelegramBot:
         titulo_formateado = ' '.join(titulo_palabras)
         titulo_formateado = f"*{titulo_formateado}*"
 
-        mensaje = f"{oferta['tag']} 🎉 ¡Nueva oferta! 🎉\n\n"
+        mensaje = f"{oferta['tag']} 📢 ¡Nueva oferta! 📢\n\n"
         mensaje += f"📌 {titulo_formateado}\n\n"
         mensaje += f"💵 Precio: {oferta['precio']}\n"
         if oferta.get('precio_original'):
