@@ -38,34 +38,61 @@ class OfertasBot:
         return scrapers
 
     async def check_ofertas(self) -> None:
-        todas_las_ofertas = []
-        for scraper in self.scrapers:
-            try:
-                logging.info(f"Iniciando scraping de {scraper.__class__.__name__}")
-                ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
-                logging.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
-                todas_las_ofertas.extend(ofertas)
-            except Exception as e:
-                logging.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
-                await self.telegram_bot.enviar_notificacion_error(e)
+    todas_las_ofertas = []
+    ofertas_por_fuente = {}
+    
+    for scraper in self.scrapers:
+        try:
+            logging.info(f"Iniciando scraping de {scraper.__class__.__name__}")
+            ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
+            logging.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
+            todas_las_ofertas.extend(ofertas)
+            ofertas_por_fuente[scraper.__class__.__name__] = len(ofertas)
+        except Exception as e:
+            logging.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
+            await self.telegram_bot.enviar_notificacion_error(e)
 
-        nuevas_ofertas = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas)
-        
-        logging.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
-        
-        ofertas_enviadas_esta_vez = 0
-        for oferta in nuevas_ofertas[:self.max_ofertas_por_ejecucion]:
-            try:
-                logging.debug(f"Intentando enviar oferta: {oferta['titulo']}")
-                await self.telegram_bot.enviar_oferta(oferta)
-                self.db_manager.guardar_oferta(oferta)
-                ofertas_enviadas_esta_vez += 1
-                logging.info(f"Oferta enviada y guardada: {oferta['titulo']}")
-            except Exception as e:
-                logging.error(f"Error al enviar oferta individual: {e}", exc_info=True)
+    logging.info(f"Total de ofertas obtenidas: {len(todas_las_ofertas)}")
+    for fuente, cantidad in ofertas_por_fuente.items():
+        logging.info(f"  - {fuente}: {cantidad} ofertas")
 
-        self.db_manager.limpiar_ofertas_antiguas()
-        logging.info(f"Se enviaron {ofertas_enviadas_esta_vez} nuevas ofertas.")
+    nuevas_ofertas = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas)
+    
+    logging.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
+    logging.info(f"Se ignoraron {len(todas_las_ofertas) - len(nuevas_ofertas)} ofertas ya enviadas anteriormente")
+    
+    ofertas_enviadas_esta_vez = 0
+    ofertas_enviadas_por_fuente = {}
+    
+    for oferta in nuevas_ofertas[:self.max_ofertas_por_ejecucion]:
+        try:
+            logging.debug(f"Intentando enviar oferta: {oferta['titulo']}")
+            await self.telegram_bot.enviar_oferta(oferta)
+            self.db_manager.guardar_oferta(oferta)
+            ofertas_enviadas_esta_vez += 1
+            
+            fuente = oferta['tag']
+            ofertas_enviadas_por_fuente[fuente] = ofertas_enviadas_por_fuente.get(fuente, 0) + 1
+            
+            logging.info(f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']}")
+        except Exception as e:
+            logging.error(f"Error al enviar oferta individual: {e}", exc_info=True)
+
+    self.db_manager.limpiar_ofertas_antiguas()
+    
+    logging.info(f"Resumen de ejecución:")
+    logging.info(f"  - Total de ofertas obtenidas: {len(todas_las_ofertas)}")
+    logging.info(f"  - Nuevas ofertas encontradas: {len(nuevas_ofertas)}")
+    logging.info(f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}")
+    logging.info(f"  - Ofertas ignoradas (ya enviadas anteriormente): {len(todas_las_ofertas) - len(nuevas_ofertas)}")
+    logging.info(f"  - Ofertas no enviadas por límite de ejecución: {max(0, len(nuevas_ofertas) - self.max_ofertas_por_ejecucion)}")
+    
+    logging.info("Ofertas enviadas por fuente:")
+    for fuente, cantidad in ofertas_enviadas_por_fuente.items():
+        logging.info(f"  - {fuente}: {cantidad}")
+
+    ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
+    logging.info(f"Se eliminaron {ofertas_antiguas_eliminadas} ofertas antiguas de la base de datos")
 
     async def run(self) -> None:
         await self.application.initialize()
