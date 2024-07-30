@@ -2,9 +2,10 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import List, Dict, Any
+import signal
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, ContextTypes, CallbackQueryHandler, CommandHandler
 
 from config import Config
 from db_manager import DBManager
@@ -23,7 +24,8 @@ class OfertasBot:
         }
         self.scrapers = self.init_scrapers()
         self.application, self.telegram_bot = setup_bot(self.config.TOKEN, self.config.CHANNEL_ID)
-        self.max_ofertas_por_ejecucion = 15  # Aumentado a 15 ofertas por ejecución
+        self.max_ofertas_por_ejecucion = 15
+        self.is_running = True
 
     def init_scrapers(self):
         scrapers = []
@@ -47,7 +49,6 @@ class OfertasBot:
                 logging.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
                 await self.telegram_bot.enviar_notificacion_error(e)
 
-        ofertas_enviadas = self.db_manager.cargar_ofertas_enviadas()
         nuevas_ofertas = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas)
         
         logging.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
@@ -76,14 +77,25 @@ class OfertasBot:
         self.application.add_handler(CommandHandler("deshabilitar", self.deshabilitar_fuente))
         self.application.add_handler(CallbackQueryHandler(self.manejar_callback_fuente))
 
-        while True:
+        while self.is_running:
             try:
                 await self.check_ofertas()
                 await asyncio.sleep(1800)  # Espera 30 minutos
+            except asyncio.CancelledError:
+                logging.info("Tarea cancelada, finalizando el bot.")
+                break
             except Exception as e:
                 logging.error(f"Se produjo un error en el ciclo principal: {e}", exc_info=True)
                 await self.telegram_bot.enviar_notificacion_error(e)
                 await asyncio.sleep(60)
+
+        await self.application.stop()
+        await self.application.shutdown()
+
+    async def stop(self):
+        self.is_running = False
+        await self.application.stop()
+        await self.application.shutdown()
 
     async def obtener_estado(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if str(update.effective_user.id) != self.config.USER_ID:
@@ -129,8 +141,25 @@ class OfertasBot:
         
         try:
             await query.edit_message_text(text=mensaje)
-        except telegram.error.BadRequest as e:
-            if "There is no text in the message to edit" in str(e):
-                await context.bot.send_message(chat_id=query.message.chat_id, text=mensaje)
-            else:
-                logging.error(f"Error al editar mensaje: {e}")
+        except Exception as e:
+            logging.error(f"Error al editar mensaje: {e}")
+            await context.bot.send_message(chat_id=query.message.chat_id, text=mensaje)
+
+def main():
+    bot = OfertasBot()
+    loop = asyncio.get_event_loop()
+
+    def signal_handler():
+        logging.info("Señal de interrupción recibida, deteniendo el bot...")
+        asyncio.create_task(bot.stop())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, signal_handler)
+
+    try:
+        loop.run_until_complete(bot.run())
+    finally:
+        loop.close()
+
+if __name__ == "__main__":
+    main()
