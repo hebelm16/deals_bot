@@ -3,6 +3,9 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any
 import signal
+import hashlib
+import time
+from collections import deque
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, ContextTypes, CallbackQueryHandler, CommandHandler
@@ -26,6 +29,11 @@ class OfertasBot:
         self.application, self.telegram_bot = setup_bot(self.config.TOKEN, self.config.CHANNEL_ID)
         self.max_ofertas_por_ejecucion = 15
         self.is_running = True
+        self.cooldowns = {
+            'slickdeals': 7 * 24 * 3600,  # 7 días para Slickdeals
+            'dealnews': 24 * 3600  # 1 día para DealNews
+        }
+        self.ofertas_recientes = deque(maxlen=1000)  # Mantiene las últimas 1000 ofertas
 
     def init_scrapers(self):
         scrapers = []
@@ -37,10 +45,51 @@ class OfertasBot:
                     scrapers.append(DealsnewsScraper(fuente['url'], fuente['tag']))
         return scrapers
 
+    def generar_id_oferta(self, oferta: Dict[str, Any]) -> str:
+        campos = [
+            oferta['titulo'],
+            oferta['precio'],
+            oferta['link'],
+            oferta.get('precio_original', ''),
+            oferta.get('imagen', ''),
+            str(int(time.time()) // (24 * 3600))  # Día actual
+        ]
+        return hashlib.md5('|'.join(campos).encode()).hexdigest()
+
+    def son_ofertas_similares(self, oferta1: Dict[str, Any], oferta2: Dict[str, Any]) -> bool:
+        return (
+            oferta1['titulo'].lower() == oferta2['titulo'].lower() and
+            oferta1['precio'] == oferta2['precio'] and
+            oferta1['link'] == oferta2['link']
+        )
+
+    def es_oferta_reciente(self, oferta: Dict[str, Any]) -> bool:
+        return any(self.son_ofertas_similares(oferta, oferta_reciente) for oferta_reciente in self.ofertas_recientes)
+
+    def calcular_puntuacion_oferta(self, oferta: Dict[str, Any]) -> float:
+        puntuacion = 0
+        if oferta['precio_original'] and oferta['precio']:
+            try:
+                precio_original = float(oferta['precio_original'].replace('$', ''))
+                precio_actual = float(oferta['precio'].replace('$', ''))
+                descuento = (precio_original - precio_actual) / precio_original
+                puntuacion += descuento * 100  # Mayor descuento, mayor puntuación
+            except ValueError:
+                pass
+        
+        if 'cupon' in oferta and oferta['cupon']:
+            puntuacion += 20  # Bonus por tener cupón
+        
+        # Penalización por ofertas similares recientes
+        if self.es_oferta_reciente(oferta):
+            puntuacion -= 50
+
+        return puntuacion
+
     async def check_ofertas(self) -> None:
         todas_las_ofertas = []
         ofertas_por_fuente = {}
-    
+        
         for scraper in self.scrapers:
             try:
                 logging.info(f"Iniciando scraping de {scraper.__class__.__name__}")
@@ -56,43 +105,76 @@ class OfertasBot:
         for fuente, cantidad in ofertas_por_fuente.items():
             logging.info(f"  - {fuente}: {cantidad} ofertas")
 
-        nuevas_ofertas = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas)
-    
+        nuevas_ofertas = self.filtrar_nuevas_ofertas(todas_las_ofertas)
+        
         logging.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
         logging.info(f"Se ignoraron {len(todas_las_ofertas) - len(nuevas_ofertas)} ofertas ya enviadas anteriormente")
-    
+        
+        ofertas_con_puntuacion = [(oferta, self.calcular_puntuacion_oferta(oferta)) for oferta in nuevas_ofertas]
+        ofertas_con_puntuacion.sort(key=lambda x: x[1], reverse=True)
+        
         ofertas_enviadas_esta_vez = 0
         ofertas_enviadas_por_fuente = {}
-    
-        for oferta in nuevas_ofertas[:self.max_ofertas_por_ejecucion]:
-            try:
-                logging.debug(f"Intentando enviar oferta: {oferta['titulo']}")
-                await self.telegram_bot.enviar_oferta(oferta)
-                self.db_manager.guardar_oferta(oferta)
-                ofertas_enviadas_esta_vez += 1
-            
-                fuente = oferta['tag']
-                ofertas_enviadas_por_fuente[fuente] = ofertas_enviadas_por_fuente.get(fuente, 0) + 1
-            
-                logging.info(f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']}")
-            except Exception as e:
-                logging.error(f"Error al enviar oferta individual: {e}", exc_info=True)
+        
+        for oferta, puntuacion in ofertas_con_puntuacion[:self.max_ofertas_por_ejecucion]:
+            if puntuacion > 30:  # Umbral de puntuación
+                try:
+                    logging.debug(f"Intentando enviar oferta: {oferta['titulo']} (Puntuación: {puntuacion})")
+                    await self.telegram_bot.enviar_oferta(oferta)
+                    self.db_manager.guardar_oferta(oferta)
+                    self.ofertas_recientes.append(oferta)
+                    ofertas_enviadas_esta_vez += 1
+                    
+                    fuente = oferta['tag']
+                    ofertas_enviadas_por_fuente[fuente] = ofertas_enviadas_por_fuente.get(fuente, 0) + 1
+                    
+                    logging.info(f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']} (Puntuación: {puntuacion})")
+                except Exception as e:
+                    logging.error(f"Error al enviar oferta individual: {e}", exc_info=True)
+            else:
+                logging.debug(f"Oferta ignorada por baja puntuación ({puntuacion}): {oferta['titulo']}")
 
-        self.db_manager.limpiar_ofertas_antiguas()
-    
+        ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
+        
         logging.info(f"Resumen de ejecución:")
         logging.info(f"  - Total de ofertas obtenidas: {len(todas_las_ofertas)}")
         logging.info(f"  - Nuevas ofertas encontradas: {len(nuevas_ofertas)}")
         logging.info(f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}")
         logging.info(f"  - Ofertas ignoradas (ya enviadas anteriormente): {len(todas_las_ofertas) - len(nuevas_ofertas)}")
-        logging.info(f"  - Ofertas no enviadas por límite de ejecución: {max(0, len(nuevas_ofertas) - self.max_ofertas_por_ejecucion)}")
-    
+        logging.info(f"  - Ofertas no enviadas por límite de ejecución o baja puntuación: {len(nuevas_ofertas) - ofertas_enviadas_esta_vez}")
+        
         logging.info("Ofertas enviadas por fuente:")
         for fuente, cantidad in ofertas_enviadas_por_fuente.items():
             logging.info(f"  - {fuente}: {cantidad}")
 
-        ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
         logging.info(f"Se eliminaron {ofertas_antiguas_eliminadas} ofertas antiguas de la base de datos")
+
+    def filtrar_nuevas_ofertas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        nuevas_ofertas = []
+        tiempo_actual = time.time()
+        ofertas_enviadas = self.db_manager.cargar_ofertas_enviadas()
+        
+        for oferta in ofertas:
+            oferta_id = self.generar_id_oferta(oferta)
+            oferta['id'] = oferta_id
+            if oferta_id in ofertas_enviadas:
+                tiempo_ultima_vez = ofertas_enviadas[oferta_id].get('timestamp')
+                if tiempo_ultima_vez is not None:
+                    try:
+                        tiempo_ultima_vez = float(tiempo_ultima_vez)
+                        cooldown = self.cooldowns.get(oferta['tag'], 24 * 3600)
+                        if tiempo_actual - tiempo_ultima_vez < cooldown:
+                            logging.debug(f"Oferta {oferta_id} ignorada: enviada hace menos de {cooldown/3600} horas")
+                            continue
+                    except ValueError:
+                        logging.warning(f"Timestamp inválido para la oferta {oferta_id}: {tiempo_ultima_vez}")
+            
+            if not any(self.son_ofertas_similares(oferta, nueva_oferta) for nueva_oferta in nuevas_ofertas):
+                nuevas_ofertas.append(oferta)
+            else:
+                logging.debug(f"Oferta similar ignorada: {oferta['titulo']} - Fuente: {oferta['tag']}")
+        
+        return nuevas_ofertas
 
     async def run(self) -> None:
         await self.application.initialize()
