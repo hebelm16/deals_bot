@@ -50,11 +50,11 @@ class OfertasBot:
             oferta['titulo'],
             oferta['precio'],
             oferta['link'],
-            oferta.get('precio_original', ''),
-            oferta.get('imagen', ''),
+            oferta.get('precio_original', '') or '',
+            oferta.get('imagen', '') or '',
             str(int(time.time()) // (24 * 3600))  # Día actual
         ]
-        return hashlib.md5('|'.join(campos).encode()).hexdigest()
+        return hashlib.md5('|'.join(str(campo) for campo in campos if campo is not None).encode()).hexdigest()
 
     def son_ofertas_similares(self, oferta1: Dict[str, Any], oferta2: Dict[str, Any]) -> bool:
         return (
@@ -95,8 +95,17 @@ class OfertasBot:
                 logging.info(f"Iniciando scraping de {scraper.__class__.__name__}")
                 ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
                 logging.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
-                todas_las_ofertas.extend(ofertas)
-                ofertas_por_fuente[scraper.__class__.__name__] = len(ofertas)
+                
+                # Filtrar ofertas inválidas
+                ofertas_validas = []
+                for oferta in ofertas:
+                    if all(oferta.get(campo) for campo in ['titulo', 'precio', 'link']):
+                        ofertas_validas.append(oferta)
+                    else:
+                        logging.warning(f"Oferta inválida ignorada: {oferta}")
+                
+                todas_las_ofertas.extend(ofertas_validas)
+                ofertas_por_fuente[scraper.__class__.__name__] = len(ofertas_validas)
             except Exception as e:
                 logging.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
                 await self.telegram_bot.enviar_notificacion_error(e)
