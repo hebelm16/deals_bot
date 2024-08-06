@@ -80,10 +80,10 @@ class DealsnewsScraper(BaseScraper):
             return []
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        ofertas = []
-
-        logging.info(f"Contenido HTML de DealNews: {response.text[:500]}...")  # Primeros 500 caracteres del HTM
+        logging.info(f"Contenido HTML de DealNews: {response.text[:500]}...")
         logging.info(f"URL de DealNews: {self.url}")
+        
+        ofertas = []
         
         secciones_oferta = soup.find_all('div', class_='flex-cell flex-cell-size-1of1')
         logging.info(f"Se encontraron {len(secciones_oferta)} secciones de oferta en DealNews")
@@ -122,26 +122,6 @@ class DealsnewsScraper(BaseScraper):
                         oferta['info_cupon'] = None
                         oferta['cupon'] = None
                     
-                    oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
-                    oferta['tag'] = self.tag
-                    oferta['timestamp'] = int(time.time())
-                    
-                    ofertas.append(oferta)
-                    logging.info(f"DealNews - Oferta procesada: {oferta['titulo']}")
-                except Exception as e:
-                    logging.error(f"Error al procesar una oferta de DealNews: {e}", exc_info=True)
-                    continue
-        
-        if not ofertas:
-            logging.warning(f"No se encontraron ofertas en {self.url}")
-        else:
-            logging.info(f"DealNews - Se encontraron {len(ofertas)} ofertas en total")
-        
-        return ofertas
-
-    @staticmethod
-    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
                     oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
                     oferta['tag'] = self.tag
                     oferta['timestamp'] = int(time.time())
