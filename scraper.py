@@ -71,13 +71,22 @@ class DealsnewsScraper(BaseScraper):
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def obtener_ofertas(self) -> List[Dict[str, Any]]:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(self.url, headers=headers)
-        response.raise_for_status()
+        try:
+            response = requests.get(self.url, headers=headers)
+            response.raise_for_status()
+            logging.info(f"Respuesta obtenida de DealNews. Código de estado: {response.status_code}")
+        except requests.RequestException as e:
+            logging.error(f"Error al obtener la página de DealNews: {e}")
+            return []
         
         soup = BeautifulSoup(response.text, 'html.parser')
         ofertas = []
+
+        logging.info(f"Contenido HTML de DealNews: {response.text[:500]}...")  # Primeros 500 caracteres del HTML
+        logging.info(f"URL de DealNews: {self.url}")
         
         secciones_oferta = soup.find_all('div', class_='flex-cell flex-cell-size-1of1')
+        logging.info(f"Se encontraron {len(secciones_oferta)} secciones de oferta en DealNews")
         
         for seccion in secciones_oferta:
             if seccion.find('div', class_='details-container'):
@@ -113,6 +122,26 @@ class DealsnewsScraper(BaseScraper):
                         oferta['info_cupon'] = None
                         oferta['cupon'] = None
                     
+                    oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
+                    oferta['tag'] = self.tag
+                    oferta['timestamp'] = int(time.time())
+                    
+                    ofertas.append(oferta)
+                    logging.info(f"DealNews - Oferta procesada: {oferta['titulo']}")
+                except Exception as e:
+                    logging.error(f"Error al procesar una oferta de DealNews: {e}", exc_info=True)
+                    continue
+        
+        if not ofertas:
+            logging.warning(f"No se encontraron ofertas en {self.url}")
+        else:
+            logging.info(f"DealNews - Se encontraron {len(ofertas)} ofertas en total")
+        
+        return ofertas
+
+    @staticmethod
+    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
+        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
                     oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
                     oferta['tag'] = self.tag
                     oferta['timestamp'] = int(time.time())
