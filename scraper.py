@@ -1,154 +1,287 @@
+import asyncio
 import logging
-from bs4 import BeautifulSoup
-import requests
+from datetime import datetime
 from typing import List, Dict, Any
-from retrying import retry
+import signal
 import hashlib
 import time
-import re
+from collections import deque
 
-class BaseScraper:
-    def __init__(self, url: str, tag: str):
-        self.url = url
-        self.tag = tag
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, ContextTypes, CallbackQueryHandler, CommandHandler
 
-    @staticmethod
-    def limpiar_texto(texto: str) -> str:
-        return ' '.join(texto.lower().split())
+from config import Config
+from db_manager import DBManager
+from scraper import SlickdealsScraper, DealsnewsScraper
+from telegram_bot import TelegramBot, setup_bot
 
-class SlickdealsScraper(BaseScraper):
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def obtener_ofertas(self) -> List[Dict[str, Any]]:
-        response = requests.get(self.url)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        ofertas = []
-        
-        for oferta in soup.find_all('div', {'class': 'dealCard__content'}):
+class OfertasBot:
+    def __init__(self):
+        self.config = Config()
+        self.db_manager = DBManager(self.config.DATABASE)
+        self.db_manager.actualizar_estructura_db()
+        self.db_manager.corregir_timestamps()
+        self.fuentes = {
+            'dealnews': {'url': self.config.DEALSNEWS_URL, 'tag': "#DealNews", 'habilitado': True},
+            'slickdeals': {'url': self.config.SLICKDEALS_URL, 'tag': "#Slickdeals", 'habilitado': True}
+        }
+        self.scrapers = self.init_scrapers()
+        self.application, self.telegram_bot = setup_bot(self.config.TOKEN, self.config.CHANNEL_ID)
+        self.max_ofertas_por_ejecucion = 15
+        self.is_running = True
+        self.cooldowns = {
+            'dealnews': 24 * 3600,  # 1 día para DealNews
+            'slickdeals': 7 * 24 * 3600  # 7 días para Slickdeals
+        }
+        self.ofertas_recientes = deque(maxlen=1000)  # Mantiene las últimas 1000 ofertas
+
+    def init_scrapers(self):
+        scrapers = []
+        for nombre, fuente in self.fuentes.items():
+            if fuente['habilitado']:
+                if nombre == 'dealnews':
+                    scrapers.append(DealsnewsScraper(fuente['url'], fuente['tag']))
+                elif nombre == 'slickdeals':
+                    scrapers.append(SlickdealsScraper(fuente['url'], fuente['tag']))
+        return scrapers
+
+    def generar_id_oferta(self, oferta: Dict[str, Any]) -> str:
+        campos = [
+            oferta['titulo'],
+            oferta['precio'],
+            oferta['link'],
+            oferta.get('precio_original', '') or '',
+            oferta.get('imagen', '') or '',
+            str(int(time.time()) // (24 * 3600))  # Día actual
+        ]
+        return hashlib.md5('|'.join(str(campo) for campo in campos if campo is not None).encode()).hexdigest()
+
+    def son_ofertas_similares(self, oferta1: Dict[str, Any], oferta2: Dict[str, Any]) -> bool:
+        return (
+            oferta1['titulo'].lower() == oferta2['titulo'].lower() and
+            oferta1['precio'] == oferta2['precio'] and
+            oferta1['link'] == oferta2['link']
+        )
+
+    def es_oferta_reciente(self, oferta: Dict[str, Any]) -> bool:
+        return any(self.son_ofertas_similares(oferta, oferta_reciente) for oferta_reciente in self.ofertas_recientes)
+
+    def calcular_puntuacion_oferta(self, oferta: Dict[str, Any]) -> float:
+        puntuacion = 0
+        if oferta['precio_original'] and oferta['precio']:
             try:
-                titulo = self.limpiar_texto(oferta.find('a', {'class': 'dealCard__title'}).text.strip())
-                link = 'https://slickdeals.net' + oferta.find('a', {'class': 'dealCard__title'})['href']
+                precio_original = float(oferta['precio_original'].replace('$', '').replace(',', ''))
+                precio_actual = float(oferta['precio'].replace('$', '').replace(',', ''))
+                descuento = (precio_original - precio_actual) / precio_original
+                puntuacion += descuento * 100  # Mayor descuento, mayor puntuación
+            except ValueError:
+                pass
+        
+        if 'cupon' in oferta and oferta['cupon']:
+            puntuacion += 20  # Bonus por tener cupón
+        
+        # Penalización por ofertas similares recientes
+        if self.es_oferta_reciente(oferta):
+            puntuacion -= 50
+
+        return puntuacion
+
+    async def check_ofertas(self) -> None:
+        todas_las_ofertas = []
+        ofertas_por_fuente = {}
+        
+        for scraper in self.scrapers:
+            try:
+                logging.info(f"Iniciando scraping de {scraper.__class__.__name__}")
+                ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
+                logging.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
                 
-                precio_elem = oferta.find('span', {'class': 'dealCard__price'})
-                precio = self.limpiar_texto(precio_elem.text.strip()) if precio_elem else 'No disponible'
+                # Logging detallado de las ofertas obtenidas
+                for oferta in ofertas:
+                    logging.debug(f"Oferta obtenida de {scraper.__class__.__name__}: {oferta}")
                 
-                precio_original_elem = oferta.find('span', {'class': 'dealCard__originalPrice'})
-                precio_original = self.limpiar_texto(precio_original_elem.text.strip()) if precio_original_elem else None
+                # Filtrar ofertas inválidas
+                ofertas_validas = []
+                for oferta in ofertas:
+                    if all(oferta.get(campo) for campo in ['titulo', 'precio', 'link']):
+                        ofertas_validas.append(oferta)
+                    else:
+                        logging.warning(f"Oferta inválida ignorada de {scraper.__class__.__name__}: {oferta}")
                 
-                imagen_elem = oferta.find('img', {'class': 'dealCard__image'})
-                imagen = imagen_elem['src'] if imagen_elem else 'No disponible'
-                
-                oferta_id = self.generar_id_oferta(titulo, precio, link)
-                
-                nueva_oferta = {
-                    'id': oferta_id,
-                    'titulo': titulo,
-                    'precio': precio,
-                    'precio_original': precio_original,
-                    'link': link,
-                    'imagen': imagen,
-                    'tag': self.tag,
-                    'timestamp': int(time.time()),
-                    'cupon': None,
-                    'info_cupon': None
-                }
-                
-                ofertas.append(nueva_oferta)
-                logging.info(f"Oferta procesada exitosamente: {titulo}")
+                todas_las_ofertas.extend(ofertas_validas)
+                ofertas_por_fuente[scraper.__class__.__name__] = len(ofertas_validas)
             except Exception as e:
-                logging.error(f"Error al procesar una oferta de Slickdeals: {e}", exc_info=True)
-                continue
-        
-        if not ofertas:
-            logging.warning(f"No se encontraron ofertas en {self.url}")
-        
-        return ofertas
+                logging.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
+                await self.telegram_bot.enviar_notificacion_error(e)
 
-    @staticmethod
-    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
+        logging.info(f"Total de ofertas obtenidas: {len(todas_las_ofertas)}")
+        for fuente, cantidad in ofertas_por_fuente.items():
+            logging.info(f"  - {fuente}: {cantidad} ofertas")
 
-class DealsnewsScraper(BaseScraper):
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def obtener_ofertas(self) -> List[Dict[str, Any]]:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        try:
-            logging.info(f"Iniciando solicitud a DealNews: {self.url}")
-            response = requests.get(self.url, headers=headers)
-            response.raise_for_status()
-            logging.info(f"Respuesta obtenida de DealNews. Código de estado: {response.status_code}")
-        except requests.RequestException as e:
-            logging.error(f"Error al obtener la página de DealNews: {e}")
-            return []
+        nuevas_ofertas = self.filtrar_nuevas_ofertas(todas_las_ofertas)
         
-        logging.info(f"Longitud del contenido HTML de DealNews: {len(response.text)} caracteres")
-        logging.info(f"Primeros 500 caracteres del HTML: {response.text[:500]}")
+        logging.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
+        logging.info(f"Se ignoraron {len(todas_las_ofertas) - len(nuevas_ofertas)} ofertas ya enviadas anteriormente")
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        ofertas = []
+        ofertas_con_puntuacion = [(oferta, self.calcular_puntuacion_oferta(oferta)) for oferta in nuevas_ofertas]
+        ofertas_con_puntuacion.sort(key=lambda x: x[1], reverse=True)
         
-        secciones_oferta = soup.find_all('div', class_='flex-cell flex-cell-size-1of1')
-        logging.info(f"Se encontraron {len(secciones_oferta)} secciones de oferta en DealNews")
+        ofertas_enviadas_esta_vez = 0
+        ofertas_enviadas_por_fuente = {}
         
-        for i, seccion in enumerate(secciones_oferta):
-            logging.info(f"Procesando sección de oferta {i+1}")
-            if seccion.find('div', class_='details-container'):
+        for oferta, puntuacion in ofertas_con_puntuacion[:self.max_ofertas_por_ejecucion]:
+            if puntuacion > 30:  # Umbral de puntuación
                 try:
-                    oferta = {}
+                    logging.debug(f"Intentando enviar oferta: {oferta['titulo']} (Puntuación: {puntuacion})")
+                    await self.telegram_bot.enviar_oferta(oferta)
+                    self.db_manager.guardar_oferta(oferta)
+                    self.ofertas_recientes.append(oferta)
+                    ofertas_enviadas_esta_vez += 1
                     
-                    titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
-                    oferta['titulo'] = titulo['title'].strip() if titulo and 'title' in titulo.attrs else 'No disponible'
-                    logging.info(f"Título encontrado: {oferta['titulo']}")
+                    fuente = oferta['tag']
+                    ofertas_enviadas_por_fuente[fuente] = ofertas_enviadas_por_fuente.get(fuente, 0) + 1
                     
-                    precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
-                    if precio_elem:
-                        precio_texto = precio_elem.text.strip()
-                        oferta['precio'] = 'Gratis' if 'free' in precio_texto.lower() else precio_texto
-                    else:
-                        oferta['precio'] = 'No disponible'
-                    logging.info(f"Precio encontrado: {oferta['precio']}")
-                    
-                    oferta['precio_original'] = None
-                    
-                    imagen = seccion.find('img', class_='native-lazy-img')
-                    oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else 'No disponible'
-                    logging.info(f"Imagen encontrada: {oferta['imagen']}")
-                    
-                    enlace = seccion.find('a', class_='attractor')
-                    oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else 'No disponible'
-                    logging.info(f"Enlace encontrado: {oferta['link']}")
-                    
-                    cupon_elem = seccion.find('div', class_='snippet summary')
-                    if cupon_elem and 'title' in cupon_elem.attrs:
-                        oferta['info_cupon'] = cupon_elem['title'].strip()
-                        cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
-                        if cupon_matches:
-                            oferta['cupon'] = cupon_matches[-1]
-                        else:
-                            oferta['cupon'] = None
-                    else:
-                        oferta['info_cupon'] = None
-                        oferta['cupon'] = None
-                    logging.info(f"Cupón encontrado: {oferta['cupon']}")
-                    
-                    oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
-                    oferta['tag'] = self.tag
-                    oferta['timestamp'] = int(time.time())
-                    
-                    ofertas.append(oferta)
-                    logging.info(f"DealNews - Oferta procesada: {oferta['titulo']}")
+                    logging.info(f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']} (Puntuación: {puntuacion})")
                 except Exception as e:
-                    logging.error(f"Error al procesar una oferta de DealNews: {e}", exc_info=True)
-                    continue
+                    logging.error(f"Error al enviar oferta individual: {e}", exc_info=True)
             else:
-                logging.info(f"La sección {i+1} no contiene una oferta válida")
-        
-        if not ofertas:
-            logging.warning(f"No se encontraron ofertas en {self.url}")
-        else:
-            logging.info(f"DealNews - Se encontraron {len(ofertas)} ofertas en total")
-        
-        return ofertas
+                logging.debug(f"Oferta ignorada por baja puntuación ({puntuacion}): {oferta['titulo']}")
 
-    @staticmethod
-    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
+        ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
+        
+        logging.info(f"Resumen de ejecución:")
+        logging.info(f"  - Total de ofertas obtenidas: {len(todas_las_ofertas)}")
+        logging.info(f"  - Nuevas ofertas encontradas: {len(nuevas_ofertas)}")
+        logging.info(f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}")
+        logging.info(f"  - Ofertas ignoradas (ya enviadas anteriormente): {len(todas_las_ofertas) - len(nuevas_ofertas)}")
+        logging.info(f"  - Ofertas no enviadas por límite de ejecución o baja puntuación: {len(nuevas_ofertas) - ofertas_enviadas_esta_vez}")
+        
+        logging.info("Ofertas enviadas por fuente:")
+        for fuente, cantidad in ofertas_enviadas_por_fuente.items():
+            logging.info(f"  - {fuente}: {cantidad}")
+
+        logging.info(f"Se eliminaron {ofertas_antiguas_eliminadas} ofertas antiguas de la base de datos")
+
+    def filtrar_nuevas_ofertas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        nuevas_ofertas = []
+        tiempo_actual = time.time()
+        ofertas_enviadas = self.db_manager.cargar_ofertas_enviadas()
+        
+        for oferta in ofertas:
+            oferta_id = self.generar_id_oferta(oferta)
+            oferta['id'] = oferta_id
+            if oferta_id in ofertas_enviadas:
+                tiempo_ultima_vez = ofertas_enviadas[oferta_id].get('timestamp')
+                if tiempo_ultima_vez is not None:
+                    try:
+                        tiempo_ultima_vez = float(tiempo_ultima_vez)
+                        cooldown = self.cooldowns.get(oferta['tag'], 24 * 3600)
+                        if tiempo_actual - tiempo_ultima_vez < cooldown:
+                            logging.debug(f"Oferta {oferta_id} ignorada: enviada hace menos de {cooldown/3600} horas")
+                            continue
+                    except ValueError:
+                        logging.warning(f"Timestamp inválido para la oferta {oferta_id}: {tiempo_ultima_vez}")
+            
+            if not any(self.son_ofertas_similares(oferta, nueva_oferta) for nueva_oferta in nuevas_ofertas):
+                nuevas_ofertas.append(oferta)
+            else:
+                logging.debug(f"Oferta similar ignorada: {oferta['titulo']} - Fuente: {oferta['tag']}")
+        
+        return nuevas_ofertas
+
+    async def run(self) -> None:
+        await self.application.initialize()
+        await self.application.start()
+        await self.application.updater.start_polling()
+
+        self.application.add_handler(CommandHandler("estado", self.obtener_estado))
+        self.application.add_handler(CommandHandler("habilitar", self.habilitar_fuente))
+        self.application.add_handler(CommandHandler("deshabilitar", self.deshabilitar_fuente))
+        self.application.add_handler(CallbackQueryHandler(self.manejar_callback_fuente))
+
+        while self.is_running:
+            try:
+                await self.check_ofertas()
+                await asyncio.sleep(1800)  # Espera 30 minutos
+            except asyncio.CancelledError:
+                logging.info("Tarea cancelada, finalizando el bot.")
+                break
+            except Exception as e:
+                logging.error(f"Se produjo un error en el ciclo principal: {e}", exc_info=True)
+                await self.telegram_bot.enviar_notificacion_error(e)
+                await asyncio.sleep(60)
+
+        await self.application.stop()
+        await self.application.shutdown()
+
+    async def stop(self):
+        self.is_running = False
+        await self.application.stop()
+        await self.application.shutdown()
+
+    async def obtener_estado(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if str(update.effective_user.id) != self.config.USER_ID:
+            await update.message.reply_text("No tienes permiso para usar este comando.")
+            return
+
+        estado = "Estado actual de las fuentes:\n"
+        for nombre, fuente in self.fuentes.items():
+            estado += f"{nombre}: {'Habilitada' if fuente['habilitado'] else 'Deshabilitada'}\n"
+        await update.message.reply_text(estado)
+
+    async def habilitar_fuente(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if str(update.effective_user.id) != self.config.USER_ID:
+            await update.message.reply_text("No tienes permiso para usar este comando.")
+            return
+
+        keyboard = [[InlineKeyboardButton(nombre, callback_data=f"habilitar_{nombre}") for nombre in self.fuentes.keys()]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Selecciona la fuente a habilitar:", reply_markup=reply_markup)
+
+    async def deshabilitar_fuente(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if str(update.effective_user.id) != self.config.USER_ID:
+            await update.message.reply_text("No tienes permiso para usar este comando.")
+            return
+
+        keyboard = [[InlineKeyboardButton(nombre, callback_data=f"deshabilitar_{nombre}") for nombre in self.fuentes.keys()]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Selecciona la fuente a deshabilitar:", reply_markup=reply_markup)
+
+    async def manejar_callback_fuente(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        await query.answer()
+
+        accion, nombre_fuente = query.data.split('_')
+        if accion == 'habilitar':
+            self.fuentes[nombre_fuente]['habilitado'] = True
+            mensaje = f"Fuente {nombre_fuente} habilitada."
+        else:
+            self.fuentes[nombre_fuente]['habilitado'] = False
+            mensaje = f"Fuente {nombre_fuente} deshabilitada."
+
+        self.scrapers = self.init_scrapers()
+        
+        try:
+            await query.edit_message_text(text=mensaje)
+        except Exception as e:
+            logging.error(f"Error al editar mensaje: {e}")
+            await context.bot.send_message(chat_id=query.message.chat_id, text=mensaje)
+
+def main():
+    bot = OfertasBot()
+    loop = asyncio.get_event_loop()
+
+    def signal_handler():
+        logging.info("Señal de interrupción recibida, deteniendo el bot...")
+        asyncio.create_task(bot.stop())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, signal_handler)
+
+    try:
+        loop.run_until_complete(bot.run())
+    finally:
+        loop.close()
+
+if __name__ == "__main__":
+    main()
