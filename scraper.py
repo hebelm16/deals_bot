@@ -82,7 +82,7 @@ class DealsnewsScraper(BaseScraper):
         soup = BeautifulSoup(response.text, 'html.parser')
         ofertas = []
 
-        logging.info(f"Contenido HTML de DealNews: {response.text[:500]}...")  # Primeros 500 caracteres del HTML
+        logging.info(f"Contenido HTML de DealNews: {response.text[:500]}...")  # Primeros 500 caracteres del HTM
         logging.info(f"URL de DealNews: {self.url}")
         
         secciones_oferta = soup.find_all('div', class_='flex-cell flex-cell-size-1of1')
