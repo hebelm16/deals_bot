@@ -72,6 +72,7 @@ class DealsnewsScraper(BaseScraper):
     def obtener_ofertas(self) -> List[Dict[str, Any]]:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         try:
+            logging.info(f"Iniciando solicitud a DealNews: {self.url}")
             response = requests.get(self.url, headers=headers)
             response.raise_for_status()
             logging.info(f"Respuesta obtenida de DealNews. Código de estado: {response.status_code}")
@@ -79,22 +80,24 @@ class DealsnewsScraper(BaseScraper):
             logging.error(f"Error al obtener la página de DealNews: {e}")
             return []
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        logging.info(f"Contenido HTML de DealNews: {response.text[:500]}...")
-        logging.info(f"URL de DealNews: {self.url}")
+        logging.info(f"Longitud del contenido HTML de DealNews: {len(response.text)} caracteres")
+        logging.info(f"Primeros 500 caracteres del HTML: {response.text[:500]}")
         
+        soup = BeautifulSoup(response.text, 'html.parser')
         ofertas = []
         
         secciones_oferta = soup.find_all('div', class_='flex-cell flex-cell-size-1of1')
         logging.info(f"Se encontraron {len(secciones_oferta)} secciones de oferta en DealNews")
         
-        for seccion in secciones_oferta:
+        for i, seccion in enumerate(secciones_oferta):
+            logging.info(f"Procesando sección de oferta {i+1}")
             if seccion.find('div', class_='details-container'):
                 try:
                     oferta = {}
                     
                     titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
                     oferta['titulo'] = titulo['title'].strip() if titulo and 'title' in titulo.attrs else 'No disponible'
+                    logging.info(f"Título encontrado: {oferta['titulo']}")
                     
                     precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
                     if precio_elem:
@@ -102,13 +105,17 @@ class DealsnewsScraper(BaseScraper):
                         oferta['precio'] = 'Gratis' if 'free' in precio_texto.lower() else precio_texto
                     else:
                         oferta['precio'] = 'No disponible'
+                    logging.info(f"Precio encontrado: {oferta['precio']}")
+                    
                     oferta['precio_original'] = None
                     
                     imagen = seccion.find('img', class_='native-lazy-img')
                     oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else 'No disponible'
+                    logging.info(f"Imagen encontrada: {oferta['imagen']}")
                     
                     enlace = seccion.find('a', class_='attractor')
                     oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else 'No disponible'
+                    logging.info(f"Enlace encontrado: {oferta['link']}")
                     
                     cupon_elem = seccion.find('div', class_='snippet summary')
                     if cupon_elem and 'title' in cupon_elem.attrs:
@@ -121,6 +128,7 @@ class DealsnewsScraper(BaseScraper):
                     else:
                         oferta['info_cupon'] = None
                         oferta['cupon'] = None
+                    logging.info(f"Cupón encontrado: {oferta['cupon']}")
                     
                     oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
                     oferta['tag'] = self.tag
@@ -131,6 +139,8 @@ class DealsnewsScraper(BaseScraper):
                 except Exception as e:
                     logging.error(f"Error al procesar una oferta de DealNews: {e}", exc_info=True)
                     continue
+            else:
+                logging.info(f"La sección {i+1} no contiene una oferta válida")
         
         if not ofertas:
             logging.warning(f"No se encontraron ofertas en {self.url}")
