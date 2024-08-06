@@ -70,8 +70,8 @@ class OfertasBot:
         puntuacion = 0
         if oferta['precio_original'] and oferta['precio']:
             try:
-                precio_original = float(oferta['precio_original'].replace('$', ''))
-                precio_actual = float(oferta['precio'].replace('$', ''))
+                precio_original = float(oferta['precio_original'].replace('$', '').replace(',', ''))
+                precio_actual = float(oferta['precio'].replace('$', '').replace(',', ''))
                 descuento = (precio_original - precio_actual) / precio_original
                 puntuacion += descuento * 100  # Mayor descuento, mayor puntuación
             except ValueError:
@@ -96,13 +96,17 @@ class OfertasBot:
                 ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
                 logging.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
                 
+                # Logging detallado de las ofertas obtenidas
+                for oferta in ofertas:
+                    logging.debug(f"Oferta obtenida de {scraper.__class__.__name__}: {oferta}")
+                
                 # Filtrar ofertas inválidas
                 ofertas_validas = []
                 for oferta in ofertas:
                     if all(oferta.get(campo) for campo in ['titulo', 'precio', 'link']):
                         ofertas_validas.append(oferta)
                     else:
-                        logging.warning(f"Oferta inválida ignorada: {oferta}")
+                        logging.warning(f"Oferta inválida ignorada de {scraper.__class__.__name__}: {oferta}")
                 
                 todas_las_ofertas.extend(ofertas_validas)
                 ofertas_por_fuente[scraper.__class__.__name__] = len(ofertas_validas)
