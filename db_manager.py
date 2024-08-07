@@ -103,23 +103,18 @@ class DBManager:
             c = conn.cursor()
             c.execute("SELECT id, timestamp FROM ofertas")
             filas = c.fetchall()
+            correcciones = 0
             for fila in filas:
                 oferta_id, timestamp = fila
                 try:
                     float(timestamp)
                 except (ValueError, TypeError):
-                    logging.warning(f"Corrigiendo timestamp inválido para la oferta {oferta_id}: {timestamp}")
                     c.execute("UPDATE ofertas SET timestamp = ? WHERE id = ?", (tiempo_actual, oferta_id))
+                    correcciones += 1
             conn.commit()
-        logging.info("Timestamps corregidos en la base de datos")
-
-    def corregir_timestamp(self, oferta_id: str, nuevo_timestamp: float) -> None:
-        with sqlite3.connect(self.database) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE ofertas SET timestamp = ? WHERE id = ?", (nuevo_timestamp, oferta_id))
-            conn.commit()
-        logging.info(f"Timestamp corregido para la oferta {oferta_id}")
-
+        if correcciones > 0:
+            logging.info(f"Se corrigieron {correcciones} timestamps inválidos en la base de datos")
+            
     def filtrar_nuevas_ofertas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         nuevas_ofertas = []
         ofertas_enviadas = self.cargar_ofertas_enviadas()
