@@ -9,7 +9,7 @@ def setup_logging():
         os.makedirs(log_dir)
 
     log_file = os.path.join(log_dir, 'bot_log.txt')
-    file_handler = RotatingFileHandler(log_file, maxBytes=10000000, backupCount=5)
+    file_handler = RotatingFileHandler(log_file, maxBytes=5000000, backupCount=3)
     console_handler = logging.StreamHandler(sys.stdout)
 
     logging.basicConfig(
@@ -18,9 +18,19 @@ def setup_logging():
         handlers=[file_handler, console_handler]
     )
 
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('telegram').setLevel(logging.WARNING)
-    logging.getLogger('httpx').setLevel(logging.WARNING)
-    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    # Reducir la verbosidad de los logs de bibliotecas externas
+    logging.getLogger('urllib3').setLevel(logging.ERROR)
+    logging.getLogger('telegram').setLevel(logging.ERROR)
+    logging.getLogger('httpx').setLevel(logging.ERROR)
+    logging.getLogger('httpcore').setLevel(logging.ERROR)
     
-    logging.getLogger('OfertasBot').setLevel(logging.DEBUG)
+    # Configurar el logger principal del bot
+    logger = logging.getLogger('OfertasBot')
+    logger.setLevel(logging.INFO)
+
+    # Filtro personalizado para reducir los warnings de timestamp inválidos
+    class TimestampFilter(logging.Filter):
+        def filter(self, record):
+            return "Timestamp inválido" not in record.getMessage()
+
+    logger.addFilter(TimestampFilter())
