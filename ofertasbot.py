@@ -12,7 +12,7 @@ from telegram.ext import Application, ContextTypes, CallbackQueryHandler, Comman
 
 from config import Config
 from db_manager import DBManager
-from scraper import SlickdealsScraper, DealsnewsScraper
+from scrapers import SlickdealsScraper, DealsnewsScraper
 from telegram_bot import TelegramBot, setup_bot
 
 class OfertasBot:
