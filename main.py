@@ -1,4 +1,3 @@
-
 import asyncio
 from bot.ofertas_bot import OfertasBot
 from utils.logging_config import setup_logging
@@ -19,3 +18,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+#yes
