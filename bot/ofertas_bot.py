@@ -142,7 +142,6 @@ class OfertasBot:
         mensaje += f"\n🔗 [Ver oferta]({oferta['link']})"
         return mensaje
 
-<<<<<<< HEAD
     def calcular_puntuacion_oferta(self, oferta):
    	puntuacion = 0
     	if 'precio_original' in oferta and 'precio' in oferta and oferta['precio_original'] and oferta['precio']:
@@ -161,7 +160,7 @@ class OfertasBot:
     # Penalización por ofertas similares recientes
     	if self.es_oferta_reciente(oferta):
         	puntuacion -= 50
-=======
+		
     def calcular_puntuacion_oferta(self, oferta: Dict[str, Any]) -> float:
         puntuacion = 0
         if 'precio_original' in oferta and 'precio' in oferta and oferta['precio_original'] and oferta['precio']:
@@ -180,7 +179,6 @@ class OfertasBot:
         # Penalización por ofertas similares recientes
         if self.es_oferta_reciente(oferta):
             puntuacion -= 50
->>>>>>> 08c82b4 (Mejorado el manejo de errores identacion)
 
         return puntuacion
 
