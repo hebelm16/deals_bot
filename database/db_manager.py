@@ -1,8 +1,8 @@
 import sqlite3
-from typing import Dict, Any
 from cachetools import TTLCache
 import time
 import logging
+from typing import List, Dict, Any
 
 class DBManager:
     def __init__(self, database: str):
@@ -116,3 +116,15 @@ class DBManager:
             c.execute("UPDATE ofertas SET timestamp = ? WHERE id = ?", (nuevo_timestamp, oferta_id))
             conn.commit()
         logging.info(f"Timestamp corregido para la oferta {oferta_id}")
+
+
+
+    def filtrar_nuevas_ofertas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        nuevas_ofertas = []
+        ofertas_enviadas = self.cargar_ofertas_enviadas()
+        
+        for oferta in ofertas:
+            if oferta['id'] not in ofertas_enviadas:
+                nuevas_ofertas.append(oferta)
+        
+        return nuevas_ofertas
