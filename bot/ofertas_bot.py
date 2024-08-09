@@ -141,7 +141,7 @@ class OfertasBot:
         return mensaje
 
     def calcular_puntuacion_oferta(self, oferta):
-    puntuacion = 0
+   	puntuacion = 0
     	if 'precio_original' in oferta and 'precio' in oferta and oferta['precio_original'] and oferta['precio']:
         	try:
 	            precio_original = float(oferta['precio_original'].replace('$', '').replace(',', ''))
