@@ -141,24 +141,25 @@ class OfertasBot:
         return mensaje
 
     def calcular_puntuacion_oferta(self, oferta):
-        puntuacion = 0
-        if oferta['precio_original'] and oferta['precio']:
-            try:
-                precio_original = float(oferta['precio_original'].replace('$', '').replace(',', ''))
-                precio_actual = float(oferta['precio'].replace('$', '').replace(',', ''))
-                descuento = (precio_original - precio_actual) / precio_original
-                puntuacion += descuento * 100  # Mayor descuento, mayor puntuación
-            except ValueError:
-                self.logger.warning(f"No se pudo calcular el descuento para la oferta: {oferta['titulo']}")
-        
-        if oferta.get('cupon'):
-            puntuacion += 20  # Bonus por tener cupón
-        
-        # Penalización por ofertas similares recientes
-        if self.es_oferta_reciente(oferta):
-            puntuacion -= 50
+    puntuacion = 0
+    	if 'precio_original' in oferta and 'precio' in oferta and oferta['precio_original'] and oferta['precio']:
+        	try:
+	            precio_original = float(oferta['precio_original'].replace('$', '').replace(',', ''))
+	            precio_actual = float(oferta['precio'].replace('$', '').replace(',', ''))
+            	    if precio_original > precio_actual:
+	                descuento = (precio_original - precio_actual) / precio_original
+	                puntuacion += descuento * 100  # Mayor descuento, mayor puntuación
+        	except ValueError:
+            	    self.logger.warning(f"No se pudo calcular el descuento para la oferta: {oferta.get('titulo', 'Sin título')}")
+    
+    	if oferta.get('cupon'):
+        	puntuacion += 20  # Bonus por tener cupón
+    
+    # Penalización por ofertas similares recientes
+    	if self.es_oferta_reciente(oferta):
+        	puntuacion -= 50
 
-        return puntuacion
+    	return puntuacion
 
     def es_oferta_reciente(self, oferta):
         return any(self.son_ofertas_similares(oferta, oferta_reciente) for oferta_reciente in self.ofertas_recientes)
