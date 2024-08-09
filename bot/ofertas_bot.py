@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections import deque
+from typing import List, Dict, Any
 from telegram import Bot
 from telegram.ext import Application
 from telegram.error import NetworkError, RetryAfter
@@ -31,13 +32,13 @@ class OfertasBot:
         self.ofertas_recientes = deque(maxlen=1000)
         self.logger = logging.getLogger('OfertasBot')
 
-    def init_scrapers(self):
+    def init_scrapers(self) -> List:
         return [
             SlickdealsScraper(self.fuentes['slickdeals']['url'], self.fuentes['slickdeals']['tag']),
             DealsnewsScraper(self.fuentes['dealnews']['url'], self.fuentes['dealnews']['tag'])
         ]
 
-    async def run(self):
+    async def run(self) -> None:
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling()
@@ -58,12 +59,12 @@ class OfertasBot:
         await self.application.stop()
         await self.application.shutdown()
 
-    async def stop(self):
+    async def stop(self) -> None:
         self.is_running = False
         await self.application.stop()
         await self.application.shutdown()
 
-    async def check_ofertas(self):
+    async def check_ofertas(self) -> None:
         todas_las_ofertas = []
         ofertas_por_fuente = {}
         
@@ -108,7 +109,7 @@ class OfertasBot:
         self.logger.info(f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}")
         self.logger.info(f"  - Ofertas antiguas eliminadas: {ofertas_antiguas_eliminadas}")
 
-    async def enviar_oferta_con_reintento(self, oferta, max_intentos=3):
+    async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any], max_intentos: int = 3) -> bool:
         for intento in range(max_intentos):
             try:
                 mensaje = self.formatear_mensaje_oferta(oferta)
@@ -127,7 +128,7 @@ class OfertasBot:
                 return False
         return False
 
-    def formatear_mensaje_oferta(self, oferta):
+    def formatear_mensaje_oferta(self, oferta: Dict[str, Any]) -> str:
         mensaje = f"{oferta['tag']} 📢 ¡Nueva oferta! 📢\n\n"
         mensaje += f"📌 *{oferta['titulo']}*\n\n"
         mensaje += f"💵 Precio: {oferta['precio']}\n"
@@ -140,6 +141,7 @@ class OfertasBot:
         mensaje += f"\n🔗 [Ver oferta]({oferta['link']})"
         return mensaje
 
+<<<<<<< HEAD
     def calcular_puntuacion_oferta(self, oferta):
    	puntuacion = 0
     	if 'precio_original' in oferta and 'precio' in oferta and oferta['precio_original'] and oferta['precio']:
@@ -158,20 +160,40 @@ class OfertasBot:
     # Penalización por ofertas similares recientes
     	if self.es_oferta_reciente(oferta):
         	puntuacion -= 50
+=======
+    def calcular_puntuacion_oferta(self, oferta: Dict[str, Any]) -> float:
+        puntuacion = 0
+        if 'precio_original' in oferta and 'precio' in oferta and oferta['precio_original'] and oferta['precio']:
+            try:
+                precio_original = float(oferta['precio_original'].replace('$', '').replace(',', ''))
+                precio_actual = float(oferta['precio'].replace('$', '').replace(',', ''))
+                if precio_original > precio_actual:
+                    descuento = (precio_original - precio_actual) / precio_original
+                    puntuacion += descuento * 100  # Mayor descuento, mayor puntuación
+            except ValueError:
+                self.logger.warning(f"No se pudo calcular el descuento para la oferta: {oferta.get('titulo', 'Sin título')}")
+        
+        if oferta.get('cupon'):
+            puntuacion += 20  # Bonus por tener cupón
+        
+        # Penalización por ofertas similares recientes
+        if self.es_oferta_reciente(oferta):
+            puntuacion -= 50
+>>>>>>> 08c82b4 (Mejorado el manejo de errores identacion)
 
-    	return puntuacion
+        return puntuacion
 
-    def es_oferta_reciente(self, oferta):
+    def es_oferta_reciente(self, oferta: Dict[str, Any]) -> bool:
         return any(self.son_ofertas_similares(oferta, oferta_reciente) for oferta_reciente in self.ofertas_recientes)
 
-    def son_ofertas_similares(self, oferta1, oferta2):
+    def son_ofertas_similares(self, oferta1: Dict[str, Any], oferta2: Dict[str, Any]) -> bool:
         return (
             oferta1['titulo'].lower() == oferta2['titulo'].lower() and
             oferta1['precio'] == oferta2['precio'] and
             oferta1['link'] == oferta2['link']
         )
 
-    async def enviar_notificacion_error(self, error):
+    async def enviar_notificacion_error(self, error: Exception) -> None:
         mensaje = f"🚨 *Error en el bot de ofertas* 🚨\n\n"
         mensaje += f"Detalles del error:\n"
         mensaje += f"`{type(error).__name__}`: `{str(error)}`"
