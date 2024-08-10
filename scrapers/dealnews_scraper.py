@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import logging
 import time
 import hashlib
+#comosiempre
 
 class DealsnewsScraper(BaseScraper):
     def obtener_ofertas(self):
