@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 from telegram import Bot
 from telegram.ext import Application
 from telegram.error import NetworkError, RetryAfter
+import random
 
 from config import Config
 from database.db_manager import DBManager
@@ -65,8 +66,7 @@ class OfertasBot:
         await self.application.shutdown()
 
     async def check_ofertas(self) -> None:
-        todas_las_ofertas = []
-        ofertas_por_fuente = {}
+        todas_las_ofertas = {'slickdeals': [], 'dealnews': []}
         
         for scraper in self.scrapers:
             try:
@@ -74,46 +74,75 @@ class OfertasBot:
                 ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
                 self.logger.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
                 
-                todas_las_ofertas.extend(ofertas)
-                ofertas_por_fuente[scraper.__class__.__name__] = len(ofertas)
+                if isinstance(scraper, SlickdealsScraper):
+                    todas_las_ofertas['slickdeals'] = ofertas
+                elif isinstance(scraper, DealsnewsScraper):
+                    todas_las_ofertas['dealnews'] = ofertas
             except Exception as e:
                 self.logger.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
 
-        nuevas_ofertas = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas)
+        nuevas_ofertas_slickdeals = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas['slickdeals'])
+        nuevas_ofertas_dealnews = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas['dealnews'])
         
-        self.logger.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
+        self.logger.info(f"Se encontraron {len(nuevas_ofertas_slickdeals)} nuevas ofertas de Slickdeals")
+        self.logger.info(f"Se encontraron {len(nuevas_ofertas_dealnews)} nuevas ofertas de DealNews")
         
-        ofertas_con_puntuacion = [(oferta, self.calcular_puntuacion_oferta(oferta)) for oferta in nuevas_ofertas]
-        ofertas_con_puntuacion.sort(key=lambda x: x[1], reverse=True)
+        ofertas_con_puntuacion_slickdeals = [(oferta, self.calcular_puntuacion_oferta(oferta)) for oferta in nuevas_ofertas_slickdeals]
+        ofertas_con_puntuacion_dealnews = [(oferta, self.calcular_puntuacion_oferta(oferta)) for oferta in nuevas_ofertas_dealnews]
+        
+        ofertas_con_puntuacion_slickdeals.sort(key=lambda x: x[1], reverse=True)
+        ofertas_con_puntuacion_dealnews.sort(key=lambda x: x[1], reverse=True)
+        
+        ofertas_a_enviar = self.seleccionar_ofertas_equilibradas(ofertas_con_puntuacion_slickdeals, ofertas_con_puntuacion_dealnews)
         
         ofertas_enviadas_esta_vez = 0
         
-        for oferta, puntuacion in ofertas_con_puntuacion[:self.max_ofertas_por_ejecucion]:
-            if puntuacion > 30:  # Umbral de puntuación
-                if await self.enviar_oferta_con_reintento(oferta):
-                    self.db_manager.guardar_oferta(oferta)
-                    self.ofertas_recientes.append(oferta)
-                    ofertas_enviadas_esta_vez += 1
-                    
-                    self.logger.info(f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']} (Puntuación: {puntuacion})")
-                else:
-                    self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {oferta['titulo']}")
+        for oferta, puntuacion in ofertas_a_enviar:
+            if await self.enviar_oferta_con_reintento(oferta):
+                self.db_manager.guardar_oferta(oferta)
+                self.ofertas_recientes.append(oferta)
+                ofertas_enviadas_esta_vez += 1
+                
+                self.logger.info(f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']} (Puntuación: {puntuacion})")
             else:
-                self.logger.debug(f"Oferta ignorada por baja puntuación ({puntuacion}): {oferta['titulo']}")
+                self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {oferta['titulo']}")
 
         ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
         
         self.logger.info(f"Resumen de ejecución:")
-        self.logger.info(f"  - Total de ofertas obtenidas: {len(todas_las_ofertas)}")
-        self.logger.info(f"  - Nuevas ofertas encontradas: {len(nuevas_ofertas)}")
+        self.logger.info(f"  - Nuevas ofertas de Slickdeals: {len(nuevas_ofertas_slickdeals)}")
+        self.logger.info(f"  - Nuevas ofertas de DealNews: {len(nuevas_ofertas_dealnews)}")
         self.logger.info(f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}")
         self.logger.info(f"  - Ofertas antiguas eliminadas: {ofertas_antiguas_eliminadas}")
+
+    def seleccionar_ofertas_equilibradas(self, ofertas_slickdeals: List[tuple], ofertas_dealnews: List[tuple]) -> List[tuple]:
+        total_ofertas = min(self.max_ofertas_por_ejecucion, len(ofertas_slickdeals) + len(ofertas_dealnews))
+        mitad = total_ofertas // 2
+        
+        ofertas_seleccionadas = []
+        ofertas_seleccionadas.extend(ofertas_slickdeals[:mitad])
+        ofertas_seleccionadas.extend(ofertas_dealnews[:mitad])
+        
+        # Si el total es impar, añadimos una oferta más al azar
+        if total_ofertas % 2 != 0:
+            if ofertas_slickdeals[mitad:]:
+                ofertas_seleccionadas.append(ofertas_slickdeals[mitad])
+            elif ofertas_dealnews[mitad:]:
+                ofertas_seleccionadas.append(ofertas_dealnews[mitad])
+        
+        # Mezclar las ofertas para que no siempre vayan en el mismo orden
+        random.shuffle(ofertas_seleccionadas)
+        
+        return ofertas_seleccionadas[:self.max_ofertas_por_ejecucion]
 
     async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any], max_intentos: int = 3) -> bool:
         for intento in range(max_intentos):
             try:
                 mensaje = self.formatear_mensaje_oferta(oferta)
-                await self.bot.send_message(chat_id=self.config.CHANNEL_ID, text=mensaje, parse_mode='Markdown')
+                if oferta.get('imagen') and oferta['imagen'] != 'No disponible':
+                    await self.bot.send_photo(chat_id=self.config.CHANNEL_ID, photo=oferta['imagen'], caption=mensaje, parse_mode='Markdown')
+                else:
+                    await self.bot.send_message(chat_id=self.config.CHANNEL_ID, text=mensaje, parse_mode='Markdown')
                 return True
             except NetworkError as e:
                 self.logger.error(f"Error de red al enviar oferta (intento {intento + 1}/{max_intentos}): {e}")
