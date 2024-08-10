@@ -69,7 +69,16 @@ class DBManager:
 
     def filtrar_ofertas_no_enviadas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ofertas_enviadas = self.cargar_ofertas_enviadas()
-        return [oferta for oferta in ofertas if oferta['id'] not in ofertas_enviadas]
+        nuevas_ofertas = []
+        for oferta in ofertas:
+            oferta_id = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
+            if oferta_id not in ofertas_enviadas:
+                oferta['id'] = oferta_id
+                nuevas_ofertas.append(oferta)
+        return nuevas_ofertas
+
+    def generar_id_oferta(self, titulo: str, precio: str, link: str) -> str:
+        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
 
     def limpiar_ofertas_antiguas(self) -> int:
         tiempo_limite = time.time() - 30 * 24 * 3600  # 30 días

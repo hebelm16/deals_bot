@@ -1,14 +1,17 @@
-from .base_scraper import BaseScraper
-import requests
-from bs4 import BeautifulSoup
 import logging
-import time
+from bs4 import BeautifulSoup
+import requests
+from typing import List, Dict, Any
+from retrying import retry
 import hashlib
+import time
 import re
 
+from .base_scraper import BaseScraper
+
 class DealsnewsScraper(BaseScraper):
-    def obtener_ofertas(self):
-        logging.info(f"DealNews: Iniciando scraping desde {self.url}")
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def obtener_ofertas(self) -> List[Dict[str, Any]]:        logging.info(f"DealNews: Iniciando scraping desde {self.url}")
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         try:
             response = requests.get(self.url, headers=headers, timeout=30)
@@ -64,14 +67,53 @@ class DealsnewsScraper(BaseScraper):
         enlace = seccion.find('a', class_='attractor')
         oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
         logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
+            
+        import logging
+from bs4 import BeautifulSoup
+import requests
+from typing import List, Dict, Any
+from retrying import retry
+import hashlib
+import time
+import re
+
+from .base_scraper import BaseScraper
+
+class DealsnewsScraper(BaseScraper):
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def obtener_ofertas(self) -> List[Dict[str, Any]]:
+        # ... (código existente)
+
+    def extraer_oferta(self, seccion):
+        oferta = {}
+        
+        titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
+        oferta['titulo'] = self.limpiar_texto(titulo.text) if titulo else None
+        logging.debug(f"DealNews: Título encontrado: {oferta['titulo']}")
+        
+        precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
+        oferta['precio'] = self.limpiar_texto(precio_elem.text) if precio_elem else None
+        oferta['precio'] = 'Gratis' if oferta['precio'] and 'free' in oferta['precio'].lower() else oferta['precio']
+        logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
+        
+        oferta['precio_original'] = None
+        
+        imagen = seccion.find('img', class_='native-lazy-img')
+        oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else None
+        logging.debug(f"DealNews: Imagen encontrada: {oferta['imagen']}")
+        
+        enlace = seccion.find('a', class_='attractor')
+        oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
+        logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
         
         info_elem = seccion.find('div', class_='snippet summary')
+
         if info_elem:
             oferta['info_cupon'] = self.limpiar_texto(info_elem.text)
             cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
             oferta['cupon'] = cupon_matches[-1] if cupon_matches else None
         else:
-            oferta['info_cupon'] = None
+            oferta['info_cupon'] = "No se requiere cupón"
             oferta['cupon'] = None
         logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
         
