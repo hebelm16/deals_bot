@@ -11,12 +11,14 @@ from .base_scraper import BaseScraper
 
 class DealsnewsScraper(BaseScraper):
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def obtener_ofertas(self) -> List[Dict[str, Any]]:        logging.info(f"DealNews: Iniciando scraping desde {self.url}")
+    def obtener_ofertas(self) -> List[Dict[str, Any]]:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         try:
+            logging.info(f"DealNews: Iniciando solicitud a {self.url}")
             response = requests.get(self.url, headers=headers, timeout=30)
             response.raise_for_status()
             logging.info(f"DealNews: Respuesta obtenida. Código de estado: {response.status_code}")
+            logging.debug(f"DealNews: Primeros 500 caracteres del contenido: {response.text[:500]}")
         except requests.RequestException as e:
             logging.error(f"DealNews: Error al obtener la página: {e}")
             return []
