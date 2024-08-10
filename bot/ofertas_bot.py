@@ -109,8 +109,8 @@ class OfertasBot:
                 except Exception as e:
                     self.logger.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
 
-            nuevas_ofertas_slickdeals = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas['slickdeals'])
-            nuevas_ofertas_dealnews = self.db_manager.filtrar_nuevas_ofertas(todas_las_ofertas['dealnews'])
+            nuevas_ofertas_slickdeals = self.db_manager.filtrar_ofertas_no_enviadas(todas_las_ofertas['slickdeals'])
+            nuevas_ofertas_dealnews = self.db_manager.filtrar_ofertas_no_enviadas(todas_las_ofertas['dealnews'])
             
             self.logger.info(f"Se encontraron {len(nuevas_ofertas_slickdeals)} nuevas ofertas de Slickdeals")
             self.logger.info(f"Se encontraron {len(nuevas_ofertas_dealnews)} nuevas ofertas de DealNews")
@@ -127,7 +127,7 @@ class OfertasBot:
             
             for oferta, puntuacion in ofertas_a_enviar:
                 if await self.enviar_oferta_con_reintento(oferta):
-                    self.db_manager.guardar_oferta(oferta)
+                    self.db_manager.marcar_oferta_como_enviada(oferta)
                     self.ofertas_recientes.append(oferta)
                     ofertas_enviadas_esta_vez += 1
                     
@@ -213,21 +213,7 @@ class OfertasBot:
         if oferta.get('cupon'):
             puntuacion += 20  # Bonus por tener cupón
         
-        # Penalización por ofertas similares recientes
-        if self.es_oferta_reciente(oferta):
-            puntuacion -= 50
-
         return puntuacion
-
-    def es_oferta_reciente(self, oferta: Dict[str, Any]) -> bool:
-        return any(self.son_ofertas_similares(oferta, oferta_reciente) for oferta_reciente in self.ofertas_recientes)
-
-    def son_ofertas_similares(self, oferta1: Dict[str, Any], oferta2: Dict[str, Any]) -> bool:
-        return (
-            oferta1['titulo'].lower() == oferta2['titulo'].lower() and
-            oferta1['precio'] == oferta2['precio'] and
-            oferta1['link'] == oferta2['link']
-        )
 
     async def enviar_notificacion_error(self, error: Exception) -> None:
         mensaje = f"🚨 *Error en el bot de ofertas* 🚨\n\n"

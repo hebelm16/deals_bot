@@ -1,9 +1,8 @@
-
 import sqlite3
+from typing import Dict, Any, List
 from cachetools import TTLCache
 import time
 import logging
-from typing import List, Dict, Any
 
 class DBManager:
     def __init__(self, database: str):
@@ -15,8 +14,25 @@ class DBManager:
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
             c.execute('''CREATE TABLE IF NOT EXISTS ofertas
-                         (id TEXT PRIMARY KEY, titulo TEXT, precio TEXT, precio_original TEXT, link TEXT, imagen TEXT, tag TEXT, timestamp REAL)''')
+                         (id TEXT PRIMARY KEY, titulo TEXT, precio TEXT, precio_original TEXT, link TEXT, imagen TEXT, tag TEXT, timestamp REAL, enviada INTEGER DEFAULT 0)''')
             conn.commit()
+
+    def actualizar_estructura_db(self) -> None:
+        try:
+            with sqlite3.connect(self.database) as conn:
+                c = conn.cursor()
+                c.execute("PRAGMA table_info(ofertas)")
+                columnas = [col[1] for col in c.fetchall()]
+                if 'imagen' not in columnas:
+                    c.execute("ALTER TABLE ofertas ADD COLUMN imagen TEXT")
+                if 'tag' not in columnas:
+                    c.execute("ALTER TABLE ofertas ADD COLUMN tag TEXT")
+                if 'enviada' not in columnas:
+                    c.execute("ALTER TABLE ofertas ADD COLUMN enviada INTEGER DEFAULT 0")
+                conn.commit()
+            logging.info("Estructura de la base de datos actualizada")
+        except sqlite3.Error as e:
+            logging.error(f"Error al actualizar la estructura de la base de datos: {e}")
 
     def cargar_ofertas_enviadas(self) -> Dict[str, Any]:
         if self.ofertas_cache:
@@ -24,20 +40,20 @@ class DBManager:
         
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
-            c.execute("SELECT * FROM ofertas")
+            c.execute("SELECT * FROM ofertas WHERE enviada = 1")
             filas = c.fetchall()
         
         ofertas = {}
         for fila in filas:
             try:
-                oferta_id, titulo, precio, precio_original, link, imagen, tag, timestamp = fila
+                oferta_id, titulo, precio, precio_original, link, imagen, tag, timestamp, enviada = fila
                 
-                try:
-                    timestamp = float(timestamp)
-                except (ValueError, TypeError):
-                    logging.warning(f"Timestamp inválido para la oferta {oferta_id}: {timestamp}. Usando tiempo actual.")
+                if timestamp is None or not isinstance(timestamp, (int, float)):
                     timestamp = time.time()
-                    self.corregir_timestamp(oferta_id, timestamp)
+                    self.actualizar_timestamp(oferta_id, timestamp)
+                    logging.info(f"Timestamp actualizado para la oferta {oferta_id}")
+                else:
+                    timestamp = float(timestamp)
                 
                 ofertas[oferta_id] = {
                     'titulo': titulo,
@@ -46,54 +62,58 @@ class DBManager:
                     'link': link,
                     'imagen': imagen,
                     'tag': tag,
-                    'timestamp': timestamp
+                    'timestamp': timestamp,
+                    'enviada': bool(enviada)
                 }
             except Exception as e:
-                logging.error(f"Error al procesar fila de la base de datos: {e}. Fila: {fila}")
+                logging.error(f"Error al procesar fila de la base de datos: {e}. Fila: {fila}", exc_info=True)
         
         self.ofertas_cache.update(ofertas)
         return ofertas
 
     def guardar_oferta(self, oferta: Dict[str, Any]) -> None:
-        try:
-            timestamp = oferta.get('timestamp')
-            if timestamp is None or not isinstance(timestamp, (int, float)):
-                logging.warning(f"Timestamp inválido o ausente para la oferta {oferta['id']}: {timestamp}. Usando tiempo actual.")
-                timestamp = time.time()
-            else:
-                timestamp = float(timestamp)
-        except Exception as e:
-            logging.error(f"Error al procesar timestamp para la oferta {oferta['id']}: {e}")
+        timestamp = oferta.get('timestamp', time.time())
+        if not isinstance(timestamp, (int, float)):
             timestamp = time.time()
+            logging.warning(f"Timestamp inválido para la oferta {oferta['id']}: {oferta.get('timestamp')}. Usando tiempo actual.")
 
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO ofertas (id, titulo, precio, precio_original, link, imagen, tag, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                      (oferta['id'], oferta['titulo'], oferta['precio'], oferta['precio_original'], oferta['link'], oferta['imagen'], oferta['tag'], timestamp))
+            c.execute("INSERT OR REPLACE INTO ofertas (id, titulo, precio, precio_original, link, imagen, tag, timestamp, enviada) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (oferta['id'], oferta['titulo'], oferta['precio'], oferta['precio_original'], oferta['link'], oferta['imagen'], oferta['tag'], timestamp, 0))
             conn.commit()
         
         oferta['timestamp'] = timestamp
+        oferta['enviada'] = False
         self.ofertas_cache[oferta['id']] = oferta
 
-    def limpiar_ofertas_antiguas(self) -> None:
+    def marcar_oferta_como_enviada(self, oferta: Dict[str, Any]) -> None:
+        with sqlite3.connect(self.database) as conn:
+            c = conn.cursor()
+            c.execute("UPDATE ofertas SET enviada = 1 WHERE id = ?", (oferta['id'],))
+            conn.commit()
+        
+        oferta['enviada'] = True
+        self.ofertas_cache[oferta['id']] = oferta
+
+    def filtrar_ofertas_no_enviadas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        ofertas_enviadas = self.cargar_ofertas_enviadas()
+        return [oferta for oferta in ofertas if oferta['id'] not in ofertas_enviadas]
+
+    def limpiar_ofertas_antiguas(self) -> int:
         tiempo_limite = time.time() - 7 * 24 * 3600  # 7 días
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
             c.execute("DELETE FROM ofertas WHERE timestamp < ?", (tiempo_limite,))
+            ofertas_eliminadas = c.rowcount
             conn.commit()
+        return ofertas_eliminadas
 
-    def actualizar_estructura_db(self) -> None:
+    def actualizar_timestamp(self, oferta_id: str, nuevo_timestamp: float) -> None:
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
-            c.execute("PRAGMA table_info(ofertas)")
-            columnas = [col[1] for col in c.fetchall()]
-            if 'imagen' not in columnas:
-                c.execute("ALTER TABLE ofertas ADD COLUMN imagen TEXT")
-            if 'tag' not in columnas:
-                c.execute("ALTER TABLE ofertas ADD COLUMN tag TEXT")
+            c.execute("UPDATE ofertas SET timestamp = ? WHERE id = ?", (nuevo_timestamp, oferta_id))
             conn.commit()
-
-        logging.info("Estructura de la base de datos actualizada")
 
     def corregir_timestamps(self) -> None:
         tiempo_actual = time.time()
@@ -101,31 +121,12 @@ class DBManager:
             c = conn.cursor()
             c.execute("SELECT id, timestamp FROM ofertas")
             filas = c.fetchall()
+            correcciones = 0
             for fila in filas:
                 oferta_id, timestamp = fila
-                try:
-                    float(timestamp)
-                except (ValueError, TypeError):
-                    logging.warning(f"Corrigiendo timestamp inválido para la oferta {oferta_id}: {timestamp}")
-                    c.execute("UPDATE ofertas SET timestamp = ? WHERE id = ?", (tiempo_actual, oferta_id))
+                if timestamp is None or not isinstance(timestamp, (int, float)):
+                    self.actualizar_timestamp(oferta_id, tiempo_actual)
+                    correcciones += 1
             conn.commit()
-        logging.info("Timestamps corregidos en la base de datos")
-
-    def corregir_timestamp(self, oferta_id: str, nuevo_timestamp: float) -> None:
-        with sqlite3.connect(self.database) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE ofertas SET timestamp = ? WHERE id = ?", (nuevo_timestamp, oferta_id))
-            conn.commit()
-        logging.info(f"Timestamp corregido para la oferta {oferta_id}")
-
-
-
-    def filtrar_nuevas_ofertas(self, ofertas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        nuevas_ofertas = []
-        ofertas_enviadas = self.cargar_ofertas_enviadas()
-        
-        for oferta in ofertas:
-            if oferta['id'] not in ofertas_enviadas:
-                nuevas_ofertas.append(oferta)
-        
-        return nuevas_ofertas
+        if correcciones > 0:
+            logging.info(f"Se corrigieron {correcciones} timestamps inválidos en la base de datos")
