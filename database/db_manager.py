@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 from cachetools import TTLCache
 import time
 import logging
+import hashlib
 
 class DBManager:
     def __init__(self, database: str):
