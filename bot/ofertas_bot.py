@@ -192,7 +192,8 @@ class OfertasBot:
             mensaje += f"💰 Precio original: {oferta['precio_original']}\n"
         if oferta.get('cupon'):
             mensaje += f"🏷️ Cupón: `{oferta['cupon']}`\n"
-        mensaje += f"ℹ️ Info: {oferta.get('info_cupon', 'No se requiere cupón')}\n"
+        if oferta['tag'] == "#DealNews" and oferta.get('info_cupon'):
+            mensaje += f"ℹ️ Info: {oferta['info_cupon']}\n"
         mensaje += f"\n🔗 [Ver oferta]({oferta['link']})"
         return mensaje
 

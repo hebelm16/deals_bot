@@ -1,12 +1,16 @@
-from .base_scraper import BaseScraper
-import requests
-from bs4 import BeautifulSoup
 import logging
-import time
+from bs4 import BeautifulSoup
+import requests
+from typing import List, Dict, Any
+from retrying import retry
 import hashlib
+import time
+
+from .base_scraper import BaseScraper
 
 class SlickdealsScraper(BaseScraper):
-    def obtener_ofertas(self):
+    @retry(stop_max_attempt_number=3, wait_fixed=5000)
+    def obtener_ofertas(self) -> List[Dict[str, Any]]:
         logging.info(f"Slickdeals: Iniciando scraping desde {self.url}")
         response = requests.get(self.url)
         logging.info(f"Slickdeals: Respuesta obtenida. Código de estado: {response.status_code}")
@@ -39,7 +43,7 @@ class SlickdealsScraper(BaseScraper):
                     'tag': self.tag,
                     'timestamp': int(time.time()),
                     'cupon': None,
-                    'info_cupon': None
+                    'info_cupon': None  # Eliminamos la información de cupón para Slickdeals
                 }
                 
                 ofertas.append(nueva_oferta)
