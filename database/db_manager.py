@@ -76,10 +76,14 @@ class DBManager:
             if oferta_id not in ofertas_enviadas:
                 oferta['id'] = oferta_id
                 nuevas_ofertas.append(oferta)
+            else:
+                logging.debug(f"Oferta ignorada (ya enviada): {oferta['titulo']}")
         return nuevas_ofertas
 
     def generar_id_oferta(self, titulo: str, precio: str, link: str) -> str:
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
+        # Usar solo una parte del link para evitar variaciones menores
+        link_parts = link.split('?')[0]  # Eliminar parámetros de la URL
+        return hashlib.md5(f"{titulo}|{precio}|{link_parts}".encode()).hexdigest()
 
     def limpiar_ofertas_antiguas(self) -> int:
         tiempo_limite = time.time() - 30 * 24 * 3600  # 30 días

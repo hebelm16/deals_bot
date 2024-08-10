@@ -36,6 +36,8 @@ class OfertasBot:
         self.ofertas_recientes = deque(maxlen=1000)
         self.logger = logging.getLogger('OfertasBot')
         self.lock = asyncio.Lock()
+	self.lock_file = "/tmp/ofertasbot.lock"
+        self.lock_fd = None
 
     def init_scrapers(self) -> List:
         return [
@@ -44,7 +46,7 @@ class OfertasBot:
         ]
 
     async def run(self) -> None:
-        if not self.acquire_lock():
+        if not await self.acquire_lock():
             self.logger.error("Otra instancia del bot ya está en ejecución. Saliendo.")
             return
 
@@ -71,25 +73,31 @@ class OfertasBot:
         finally:
             self.release_lock()
 
-    def acquire_lock(self) -> bool:
-        lock_file = "/tmp/ofertasbot.lock"
-        self.lock_fd = open(lock_file, 'w')
+    async def acquire_lock(self) -> bool:
         try:
+            self.lock_fd = open(self.lock_file, 'w')
             fcntl.lockf(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
         except IOError:
+            if self.lock_fd:
+                self.lock_fd.close()
             return False
 
     def release_lock(self) -> None:
-        if hasattr(self, 'lock_fd'):
+        if self.lock_fd:
             fcntl.lockf(self.lock_fd, fcntl.LOCK_UN)
             self.lock_fd.close()
+            try:
+                os.remove(self.lock_file)
+            except OSError:
+                pass
 
     async def stop(self) -> None:
         self.is_running = False
         if self.application:
             await self.application.stop()
             await self.application.shutdown()
+        self.release_lock()
 
     async def check_ofertas(self) -> None:
         async with self.lock:
