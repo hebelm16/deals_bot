@@ -64,9 +64,8 @@ class DealsnewsScraper(BaseScraper):
         enlace = seccion.find('a', class_='attractor')
         oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
         logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
-                    
-	info_elem = seccion.find('div', class_='snippet summary')
-
+        
+        info_elem = seccion.find('div', class_='snippet summary')
         if info_elem:
             oferta['info_cupon'] = self.limpiar_texto(info_elem.text)
             cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
