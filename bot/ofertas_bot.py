@@ -36,7 +36,7 @@ class OfertasBot:
         self.ofertas_recientes = deque(maxlen=1000)
         self.logger = logging.getLogger('OfertasBot')
         self.lock = asyncio.Lock()
-	self.lock_file = "/tmp/ofertasbot.lock"
+        self.lock_file = "/tmp/ofertasbot.lock"
         self.lock_fd = None
 
     def init_scrapers(self) -> List:
