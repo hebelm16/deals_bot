@@ -8,6 +8,7 @@ from telegram.error import NetworkError, RetryAfter, Conflict
 import random
 import os
 import fcntl
+import time
 
 from config import Config
 from database.db_manager import DBManager
@@ -59,13 +60,11 @@ class OfertasBot:
             while self.is_running:
                 try:
                     await self.check_ofertas()
-                    await asyncio.sleep(1800)  # 30 minutos
-                except asyncio.CancelledError:
-                    self.logger.info("Tarea cancelada, finalizando el bot.")
-                    break
                 except Exception as e:
                     self.logger.error(f"Error en el ciclo principal: {e}", exc_info=True)
-                    await asyncio.sleep(60)
+                    await self.enviar_notificacion_error(e)
+                finally:
+                    await asyncio.sleep(1800)  # 30 minutos
 
             await self.application.stop()
             await self.application.shutdown()

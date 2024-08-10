@@ -54,6 +54,8 @@ class DealsnewsScraper(BaseScraper):
         oferta['precio'] = 'Gratis' if oferta['precio'] and 'free' in oferta['precio'].lower() else oferta['precio']
         logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
         
+        oferta['precio_original'] = None
+        
         imagen = seccion.find('img', class_='native-lazy-img')
         oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else None
         logging.debug(f"DealNews: Imagen encontrada: {oferta['imagen']}")
@@ -61,6 +63,17 @@ class DealsnewsScraper(BaseScraper):
         enlace = seccion.find('a', class_='attractor')
         oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
         logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
+                    
+	info_elem = seccion.find('div', class_='snippet summary')
+
+        if info_elem:
+            oferta['info_cupon'] = self.limpiar_texto(info_elem.text)
+            cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
+            oferta['cupon'] = cupon_matches[-1] if cupon_matches else None
+        else:
+            oferta['info_cupon'] = None
+            oferta['cupon'] = None
+        logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
         
         if all([oferta['titulo'], oferta['precio'], oferta['link']]):
             oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])

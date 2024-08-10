@@ -15,6 +15,7 @@ class DBManager:
             c = conn.cursor()
             c.execute('''CREATE TABLE IF NOT EXISTS ofertas
                          (id TEXT PRIMARY KEY, titulo TEXT, precio TEXT, precio_original TEXT, link TEXT, imagen TEXT, tag TEXT, timestamp REAL, enviada INTEGER DEFAULT 0)''')
+            c.execute("CREATE INDEX IF NOT EXISTS idx_enviada ON ofertas(enviada)")
             conn.commit()
 
     def actualizar_estructura_db(self) -> None:
@@ -29,47 +30,17 @@ class DBManager:
                     c.execute("ALTER TABLE ofertas ADD COLUMN tag TEXT")
                 if 'enviada' not in columnas:
                     c.execute("ALTER TABLE ofertas ADD COLUMN enviada INTEGER DEFAULT 0")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_enviada ON ofertas(enviada)")
                 conn.commit()
             logging.info("Estructura de la base de datos actualizada")
         except sqlite3.Error as e:
             logging.error(f"Error al actualizar la estructura de la base de datos: {e}")
 
-    def cargar_ofertas_enviadas(self) -> Dict[str, Any]:
-        if self.ofertas_cache:
-            return self.ofertas_cache
-        
+    def cargar_ofertas_enviadas(self) -> set:
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
-            c.execute("SELECT * FROM ofertas WHERE enviada = 1")
-            filas = c.fetchall()
-        
-        ofertas = {}
-        for fila in filas:
-            try:
-                oferta_id, titulo, precio, precio_original, link, imagen, tag, timestamp, enviada = fila
-                
-                if timestamp is None or not isinstance(timestamp, (int, float)):
-                    timestamp = time.time()
-                    self.actualizar_timestamp(oferta_id, timestamp)
-                    logging.info(f"Timestamp actualizado para la oferta {oferta_id}")
-                else:
-                    timestamp = float(timestamp)
-                
-                ofertas[oferta_id] = {
-                    'titulo': titulo,
-                    'precio': precio,
-                    'precio_original': precio_original,
-                    'link': link,
-                    'imagen': imagen,
-                    'tag': tag,
-                    'timestamp': timestamp,
-                    'enviada': bool(enviada)
-                }
-            except Exception as e:
-                logging.error(f"Error al procesar fila de la base de datos: {e}. Fila: {fila}", exc_info=True)
-        
-        self.ofertas_cache.update(ofertas)
-        return ofertas
+            c.execute("SELECT id FROM ofertas WHERE enviada = 1")
+            return set(row[0] for row in c.fetchall())
 
     def guardar_oferta(self, oferta: Dict[str, Any]) -> None:
         timestamp = oferta.get('timestamp', time.time())
@@ -101,7 +72,7 @@ class DBManager:
         return [oferta for oferta in ofertas if oferta['id'] not in ofertas_enviadas]
 
     def limpiar_ofertas_antiguas(self) -> int:
-        tiempo_limite = time.time() - 7 * 24 * 3600  # 7 días
+        tiempo_limite = time.time() - 30 * 24 * 3600  # 30 días
         with sqlite3.connect(self.database) as conn:
             c = conn.cursor()
             c.execute("DELETE FROM ofertas WHERE timestamp < ?", (tiempo_limite,))
