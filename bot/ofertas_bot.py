@@ -30,6 +30,7 @@ class OfertasBot:
         self.lock = asyncio.Lock()
         self.lock_file = "/tmp/ofertasbot.lock"
         self.lock_fd = None
+        self.max_ofertas_por_ejecucion = 20  # Limitamos a 20 ofertas por ejecución
 
     def init_scrapers(self) -> List:
         return [
@@ -94,24 +95,34 @@ class OfertasBot:
 
     async def check_ofertas(self) -> None:
         async with self.lock:
-            todas_las_ofertas = []
+            todas_las_ofertas = {'slickdeals': [], 'dealnews': []}
             
             for scraper in self.scrapers:
                 try:
                     self.logger.info(f"Iniciando scraping de {scraper.__class__.__name__}")
                     ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
                     self.logger.info(f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}")
-                    todas_las_ofertas.extend(ofertas)
+                    
+                    if isinstance(scraper, SlickdealsScraper):
+                        todas_las_ofertas['slickdeals'] = ofertas
+                    elif isinstance(scraper, DealsnewsScraper):
+                        todas_las_ofertas['dealnews'] = ofertas
                 except Exception as e:
                     self.logger.error(f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}", exc_info=True)
 
-            nuevas_ofertas = [oferta for oferta in todas_las_ofertas if not self.db_manager.es_oferta_repetida(oferta)]
+            nuevas_ofertas_slickdeals = [oferta for oferta in todas_las_ofertas['slickdeals'] if not self.db_manager.es_oferta_repetida(oferta)]
+            nuevas_ofertas_dealnews = [oferta for oferta in todas_las_ofertas['dealnews'] if not self.db_manager.es_oferta_repetida(oferta)]
             
-            self.logger.info(f"Se encontraron {len(nuevas_ofertas)} nuevas ofertas para enviar")
+            self.logger.info(f"Nuevas ofertas de Slickdeals: {len(nuevas_ofertas_slickdeals)}")
+            self.logger.info(f"Nuevas ofertas de DealNews: {len(nuevas_ofertas_dealnews)}")
+            
+            ofertas_a_enviar = self.seleccionar_ofertas_equilibradas(nuevas_ofertas_slickdeals, nuevas_ofertas_dealnews)
+            
+            self.logger.info(f"Total de ofertas a enviar: {len(ofertas_a_enviar)}")
             
             ofertas_enviadas_esta_vez = 0
             
-            for oferta in nuevas_ofertas:
+            for oferta in ofertas_a_enviar:
                 if await self.enviar_oferta_con_reintento(oferta):
                     self.db_manager.guardar_oferta(oferta)
                     ofertas_enviadas_esta_vez += 1
@@ -119,14 +130,30 @@ class OfertasBot:
                 else:
                     self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {oferta['titulo']}")
 
-                await asyncio.sleep(1)  # Espera 1 segundo entre cada envío
+                await asyncio.sleep(5)  # Espera 5 segundos entre cada envío para evitar flood
 
             ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
             
             self.logger.info(f"Resumen de ejecución:")
-            self.logger.info(f"  - Nuevas ofertas encontradas: {len(nuevas_ofertas)}")
             self.logger.info(f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}")
             self.logger.info(f"  - Ofertas antiguas eliminadas: {ofertas_antiguas_eliminadas}")
+
+    def seleccionar_ofertas_equilibradas(self, ofertas_slickdeals: List[Dict[str, Any]], ofertas_dealnews: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        total_ofertas = min(self.max_ofertas_por_ejecucion, len(ofertas_slickdeals) + len(ofertas_dealnews))
+        mitad = total_ofertas // 2
+        
+        ofertas_seleccionadas = []
+        ofertas_seleccionadas.extend(random.sample(ofertas_slickdeals, min(mitad, len(ofertas_slickdeals))))
+        ofertas_seleccionadas.extend(random.sample(ofertas_dealnews, min(total_ofertas - len(ofertas_seleccionadas), len(ofertas_dealnews))))
+        
+        # Si aún no hemos alcanzado el total, completamos con las ofertas restantes
+        if len(ofertas_seleccionadas) < total_ofertas:
+            ofertas_restantes = ofertas_slickdeals + ofertas_dealnews
+            ofertas_restantes = [oferta for oferta in ofertas_restantes if oferta not in ofertas_seleccionadas]
+            ofertas_seleccionadas.extend(random.sample(ofertas_restantes, min(total_ofertas - len(ofertas_seleccionadas), len(ofertas_restantes))))
+        
+        random.shuffle(ofertas_seleccionadas)
+        return ofertas_seleccionadas
 
     async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any], max_intentos: int = 3) -> bool:
         for intento in range(max_intentos):
