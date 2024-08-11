@@ -27,7 +27,6 @@ class OfertasBot:
         self.scrapers = self.init_scrapers()
         self.application = None
         self.bot = None
-        self.max_ofertas_por_ejecucion = 15
         self.is_running = True
         self.cooldowns = {
             'slickdeals': 7 * 24 * 3600,
@@ -77,8 +76,10 @@ class OfertasBot:
         try:
             self.lock_fd = open(self.lock_file, 'w')
             fcntl.lockf(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.logger.info("Bloqueo adquirido exitosamente")
             return True
         except IOError:
+            self.logger.warning("No se pudo adquirir el bloqueo. Otra instancia puede estar en ejecución.")
             if self.lock_fd:
                 self.lock_fd.close()
             return False
@@ -89,8 +90,9 @@ class OfertasBot:
             self.lock_fd.close()
             try:
                 os.remove(self.lock_file)
+                self.logger.info("Bloqueo liberado y archivo de bloqueo eliminado")
             except OSError:
-                pass
+                self.logger.warning("No se pudo eliminar el archivo de bloqueo")
 
     async def stop(self) -> None:
         self.is_running = False
@@ -130,6 +132,8 @@ class OfertasBot:
             
             ofertas_a_enviar = self.seleccionar_ofertas_equilibradas(ofertas_con_puntuacion_slickdeals, ofertas_con_puntuacion_dealnews)
             
+            self.logger.info(f"Total de ofertas a enviar: {len(ofertas_a_enviar)}")
+            
             ofertas_enviadas_esta_vez = 0
             
             for oferta, puntuacion in ofertas_a_enviar:
@@ -151,24 +155,14 @@ class OfertasBot:
             self.logger.info(f"  - Ofertas antiguas eliminadas: {ofertas_antiguas_eliminadas}")
 
     def seleccionar_ofertas_equilibradas(self, ofertas_slickdeals: List[tuple], ofertas_dealnews: List[tuple]) -> List[tuple]:
-        total_ofertas = min(self.max_ofertas_por_ejecucion, len(ofertas_slickdeals) + len(ofertas_dealnews))
-        mitad = total_ofertas // 2
-        
         ofertas_seleccionadas = []
-        ofertas_seleccionadas.extend(ofertas_slickdeals[:mitad])
-        ofertas_seleccionadas.extend(ofertas_dealnews[:mitad])
-        
-        # Si el total es impar, añadimos una oferta más al azar
-        if total_ofertas % 2 != 0:
-            if ofertas_slickdeals[mitad:]:
-                ofertas_seleccionadas.append(ofertas_slickdeals[mitad])
-            elif ofertas_dealnews[mitad:]:
-                ofertas_seleccionadas.append(ofertas_dealnews[mitad])
+        ofertas_seleccionadas.extend(ofertas_slickdeals)
+        ofertas_seleccionadas.extend(ofertas_dealnews)
         
         # Mezclar las ofertas para que no siempre vayan en el mismo orden
         random.shuffle(ofertas_seleccionadas)
         
-        return ofertas_seleccionadas[:self.max_ofertas_por_ejecucion]
+        return ofertas_seleccionadas
 
     async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any], max_intentos: int = 3) -> bool:
         for intento in range(max_intentos):
