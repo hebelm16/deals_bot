@@ -49,45 +49,45 @@ class DealsnewsScraper(BaseScraper):
         return ofertas
 
     def extraer_oferta(self, seccion):
-        oferta = {}
-        
-        titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
-        oferta['titulo'] = self.limpiar_texto(titulo.text) if titulo else None
-        logging.debug(f"DealNews: Título encontrado: {oferta['titulo']}")
-        
-        precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
-        oferta['precio'] = self.limpiar_texto(precio_elem.text) if precio_elem else None
-        oferta['precio'] = 'Gratis' if oferta['precio'] and 'free' in oferta['precio'].lower() else oferta['precio']
-        logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
-        
-        oferta['precio_original'] = None
-        
-        imagen = seccion.find('img', class_='native-lazy-img')
-        oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else None
-        logging.debug(f"DealNews: Imagen encontrada: {oferta['imagen']}")
-        
-        enlace = seccion.find('a', class_='attractor')
-        oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
-        logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
-        
-        info_elem = seccion.find('div', class_='snippet summary')
-        if info_elem:
-            oferta['info_cupon'] = self.limpiar_texto(info_elem.text)
-            cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
-            oferta['cupon'] = cupon_matches[-1] if cupon_matches else None
-        else:
-            oferta['info_cupon'] = "No se requiere cupón"
-            oferta['cupon'] = None
-        logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
-        
-        if all([oferta['titulo'], oferta['precio'], oferta['link']]):
-            oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
-            oferta['tag'] = self.tag
-            oferta['timestamp'] = int(time.time())
-            return oferta
-        else:
-            logging.warning("DealNews: Oferta incompleta ignorada")
-            return None
+    oferta = {}
+    
+    titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
+    oferta['titulo'] = self.limpiar_texto(titulo.text) if titulo else None
+    logging.debug(f"DealNews: Título encontrado: {oferta['titulo']}")
+    
+    precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
+    oferta['precio'] = self.limpiar_texto(precio_elem.text) if precio_elem else None
+    oferta['precio'] = 'Gratis' if oferta['precio'] and 'free' in oferta['precio'].lower() else oferta['precio']
+    logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
+    
+    oferta['precio_original'] = None
+    
+    imagen = seccion.find('img', class_='native-lazy-img')
+    oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else None
+    logging.debug(f"DealNews: Imagen encontrada: {oferta['imagen']}")
+    
+    enlace = seccion.find('a', class_='attractor')
+    oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
+    logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
+    
+    info_elem = seccion.find('div', class_='snippet summary')
+    if info_elem:
+        oferta['info_cupon'] = self.limpiar_texto(info_elem.text)
+        cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
+        oferta['cupon'] = cupon_matches[-1] if cupon_matches else None
+    else:
+        oferta['info_cupon'] = "No se requiere cupón"
+        oferta['cupon'] = None
+    logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
+    
+    if all([oferta['titulo'], oferta['precio'], oferta['link']]):
+        oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
+        oferta['tag'] = self.tag
+        oferta['timestamp'] = int(time.time())
+        return oferta
+    else:
+        logging.warning("DealNews: Oferta incompleta ignorada")
+        return None
 
     @staticmethod
     def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
