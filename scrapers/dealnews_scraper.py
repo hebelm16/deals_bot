@@ -12,13 +12,12 @@ from .base_scraper import BaseScraper
 class DealsnewsScraper(BaseScraper):
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def obtener_ofertas(self) -> List[Dict[str, Any]]:
+        logging.info(f"DealNews: Iniciando scraping desde {self.url}")
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         try:
-            logging.info(f"DealNews: Iniciando solicitud a {self.url}")
             response = requests.get(self.url, headers=headers, timeout=30)
             response.raise_for_status()
             logging.info(f"DealNews: Respuesta obtenida. Código de estado: {response.status_code}")
-            logging.debug(f"DealNews: Primeros 500 caracteres del contenido: {response.text[:500]}")
         except requests.RequestException as e:
             logging.error(f"DealNews: Error al obtener la página: {e}")
             return []
@@ -56,11 +55,22 @@ class DealsnewsScraper(BaseScraper):
         logging.debug(f"DealNews: Título encontrado: {oferta['titulo']}")
         
         precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
-        oferta['precio'] = self.limpiar_texto(precio_elem.text) if precio_elem else None
-        oferta['precio'] = 'Gratis' if oferta['precio'] and 'free' in oferta['precio'].lower() else oferta['precio']
-        logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
+        if precio_elem:
+            precio_texto = precio_elem.get_text(strip=True)
+            precio_match = re.search(r'\$\d+(?:\.\d+)?', precio_texto)
+            oferta['precio'] = precio_match.group() if precio_match else 'No disponible'
+            
+            precio_original_elem = precio_elem.find('span', class_='callout-comparison')
+            if precio_original_elem:
+                oferta['precio_original'] = self.limpiar_texto(precio_original_elem.text)
+            else:
+                oferta['precio_original'] = None
+        else:
+            oferta['precio'] = 'No disponible'
+            oferta['precio_original'] = None
         
-        oferta['precio_original'] = None
+        logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
+        logging.debug(f"DealNews: Precio original encontrado: {oferta['precio_original']}")
         
         imagen = seccion.find('img', class_='native-lazy-img')
         oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else None
@@ -92,3 +102,7 @@ class DealsnewsScraper(BaseScraper):
     @staticmethod
     def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
         return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
+
+    @staticmethod
+    def limpiar_texto(texto: str) -> str:
+        return ' '.join(texto.strip().split())
