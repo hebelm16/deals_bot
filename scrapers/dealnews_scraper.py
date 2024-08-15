@@ -58,7 +58,10 @@ class DealsnewsScraper(BaseScraper):
         if precio_elem:
             precio_texto = precio_elem.get_text(strip=True)
             precio_match = re.search(r'\$\d+(?:\.\d+)?', precio_texto)
-            oferta['precio'] = precio_match.group() if precio_match else 'No disponible'
+            if precio_match:
+                oferta['precio'] = precio_match.group()
+            else:
+                oferta['precio'] = self.limpiar_texto(precio_texto)
             
             precio_original_elem = precio_elem.find('span', class_='callout-comparison')
             if precio_original_elem:
