@@ -1,1 +1,1 @@
-worker: playwright install && python main.py
+worker: playwright install-deps && playwright install && python main.py
