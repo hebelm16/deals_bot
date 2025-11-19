@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any
 from telegram import Bot
 from telegram.ext import Application
-from telegram.error import NetworkError, RetryAfter, Conflict
+from telegram.error import NetworkError, RetryAfter, Conflict, BadRequest
 import random
 import os
 import time
@@ -12,6 +12,7 @@ from filelock import FileLock, Timeout
 
 from config import Config
 from database.db_manager import DBManager
+import re
 from scrapers.slickdeals_scraper import SlickdealsScraper
 from scrapers.dealnews_scraper import DealsnewsScraper
 from scrapers.dealsofamerica_scraper import DealsOfAmericaScraper
@@ -108,14 +109,12 @@ class OfertasBot:
 
             self.logger.info("Iniciando scraping concurrente de todas las fuentes.")
             tasks = []
+            # Todos los scrapers se ejecutan en hilos separados para no bloquear el bot
             for scraper in self.scrapers:
-                if isinstance(scraper, DealsOfAmericaScraper):
-                    # This scraper is async, so we can call it directly
-                    tasks.append(scraper.obtener_ofertas())
+                if isinstance(scraper, DealsOfAmericaScraper): # Playwright scraper
+                    tasks.append(asyncio.to_thread(scraper.obtener_ofertas_sync))
                 else:
-                    # These scrapers are sync, so they run in a thread
                     tasks.append(asyncio.to_thread(scraper.obtener_ofertas))
-            
             results = await asyncio.gather(*tasks, return_exceptions=True)
             self.logger.info("Scraping concurrente finalizado.")
 
@@ -281,32 +280,38 @@ class OfertasBot:
                 if intento < max_intentos - 1:
                     await asyncio.sleep(5 * (intento + 1))
             except Exception as e:
-                self.logger.error(f"Error inesperado al enviar oferta: {e}", exc_info=True)
+                self.logger.error(f"Error inesperado al enviar oferta '{oferta.get('titulo')}': {e}", exc_info=True)
                 return False
         return False
 
     def formatear_mensaje_oferta(self, oferta: Dict[str, Any]) -> Dict[str, Any]:
         emoji_map = {
-            "#DealNews": "🏷️",
-            "#Slickdeals": "🛍️",
-            "#DealsOfAmerica": "🇺🇸"
+            "#DealNews": "📰",
+            "#Slickdeals": "🔥",
+            "#DealsOfAmerica": "🇺🇸",
         }
-        emoji_tag = emoji_map.get(oferta['tag'], '🔥')
+        emoji_tag = emoji_map.get(oferta['tag'], '✨')
         
-        mensaje = f"{emoji_tag} *¡OFERTA ESPECIAL!* {emoji_tag}\n\n"
+        # Usamos Markdown V1 que es más permisivo y no requiere escapar caracteres.
+        mensaje = f"{emoji_tag} *¡NUEVA OFERTA!* {emoji_tag}\n\n"
         mensaje += f"🔥 *{oferta['titulo']}*\n\n"
-        mensaje += f"💰 Precio: {oferta['precio']}\n"
-        if oferta.get('precio_original'):
-            mensaje += f"🏷️ Precio original: {oferta['precio_original']}\n"
+        mensaje += f"💰 *Precio: {oferta['precio']}*\n"
+
+        if oferta.get('precio_original') and oferta['precio_original'] != oferta['precio']:
+            # Markdown V1 no soporta tachado (~), así que lo mostramos como texto normal.
+            mensaje += f"💸 Antes: {oferta['precio_original']}\n"
+
         if oferta.get('cupon'):
-            mensaje += f"🎟️ Cupón: `{oferta['cupon']}`\n"
-        if oferta['tag'] == "#DealNews" and oferta.get('info_cupon'):
-            mensaje += f"ℹ️ Info adicional: {oferta['info_cupon']}\n"
-        
+            mensaje += f"\n🎟️ *CUPÓN*: `{oferta['cupon']}`\n"
+
+        if oferta.get('info_cupon'):
+            info_cupon_texto = oferta['info_cupon'][:250]
+            mensaje += f"\nℹ️ _Info adicional: {info_cupon_texto}..._\n"
+
         # Crear el botón inline
         keyboard = [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=oferta['link'])]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         return {
             "text": mensaje,
             "reply_markup": reply_markup,

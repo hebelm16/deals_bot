@@ -35,15 +35,6 @@ class DealsOfAmericaScraper(BaseScraper):
                 
                 content = await page.content()
                 
-                # --- Bloque de Debugging ---
-                try:
-                    with open("debug_dealsofamerica.html", "w", encoding="utf-8") as f:
-                        f.write(content)
-                    logging.info("DealsOfAmerica: HTML de debugging guardado en debug_dealsofamerica.html")
-                except Exception as e:
-                    logging.error(f"DealsOfAmerica: No se pudo guardar el archivo de debug: {e}")
-                # --- Fin del Bloque de Debugging ---
-
                 await browser.close()
         except (PlaywrightTimeoutError, Exception) as e:
             logging.error(f"DealsOfAmerica: Error durante la navegación con Playwright: {e}")
@@ -129,3 +120,7 @@ class DealsOfAmericaScraper(BaseScraper):
     def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
         """Genera un ID único para la oferta."""
         return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
+
+    def obtener_ofertas_sync(self) -> List[Dict[str, Any]]:
+        """Wrapper síncrono para ejecutar el método asíncrono."""
+        return asyncio.run(self.obtener_ofertas())
