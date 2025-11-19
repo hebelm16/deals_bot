@@ -22,6 +22,16 @@ class DealsOfAmericaScraper(BaseScraper):
                 await page.wait_for_selector('div.deal-item-container', timeout=30000)
                 
                 content = await page.content()
+                
+                # --- Bloque de Debugging ---
+                try:
+                    with open("debug_dealsofamerica.html", "w", encoding="utf-8") as f:
+                        f.write(content)
+                    logging.info("DealsOfAmerica: HTML de debugging guardado en debug_dealsofamerica.html")
+                except Exception as e:
+                    logging.error(f"DealsOfAmerica: No se pudo guardar el archivo de debug: {e}")
+                # --- Fin del Bloque de Debugging ---
+
                 await browser.close()
         except Exception as e:
             logging.error(f"DealsOfAmerica: Error durante la navegación con Playwright: {e}")
