@@ -48,17 +48,20 @@ class OfertasBot:
         self.max_ofertas_por_ejecucion = 20  # Limitamos a 20 ofertas por ejecución
 
     def init_scrapers(self) -> List:
-        return [
-            SlickdealsScraper(
+        scrapers = []
+        if self.fuentes["slickdeals"]["habilitado"]:
+            scrapers.append(SlickdealsScraper(
                 self.fuentes["slickdeals"]["url"], self.fuentes["slickdeals"]["tag"]
-            ),
-            DealsnewsScraper(
+            ))
+        if self.fuentes["dealnews"]["habilitado"]:
+            scrapers.append(DealsnewsScraper(
                 self.fuentes["dealnews"]["url"], self.fuentes["dealnews"]["tag"]
-            ),
-            DealsOfAmericaScraper(
+            ))
+        if self.fuentes["dealsofamerica"]["habilitado"]:
+            scrapers.append(DealsOfAmericaScraper(
                 self.fuentes["dealsofamerica"]["url"], self.fuentes["dealsofamerica"]["tag"]
-            ),
-        ]
+            ))
+        return scrapers
 
     async def run(self) -> None:
         try:

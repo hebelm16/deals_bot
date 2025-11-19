@@ -1,0 +1,42 @@
+# Archivos de entorno virtual
+# Evita subir las dependencias completas, solo el archivo requirements.txt
+venv/
+*.venv
+.env/
+
+# Archivo de secretos
+# ¡MUY IMPORTANTE! Nunca subas tus credenciales.
+.env
+
+# Base de datos
+# La base de datos cambiará en cada ejecución y no debe estar en el control de versiones.
+*.db
+*.sqlite
+*.sqlite3
+ofertas.db
+
+# Archivos de registro y depuración
+# Estos archivos se generan en cada ejecución y no son parte del código fuente.
+*.log
+bot_log.txt
+debug_*.html
+
+# Archivos de bloqueo
+# Previene que se ejecuten múltiples instancias, no es parte del código.
+*.lock
+ofertasbot.lock
+
+# Caché y artefactos de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Navegadores de Playwright
+# Playwright descarga navegadores que ocupan mucho espacio.
+ms-playwright/
+
+# Archivos de configuración de IDEs/Editores
+.vscode/
+.idea/
+*.swp
