@@ -1,44 +1,49 @@
 import logging
 from bs4 import BeautifulSoup
-import requests
 from typing import List, Dict, Any
-from retrying import retry
-import re
+from playwright.async_api import async_playwright
+import asyncio
 
 from .base_scraper import BaseScraper
 
 class DealsOfAmericaScraper(BaseScraper):
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def obtener_ofertas(self) -> List[Dict[str, Any]]:
-        logging.info(f"DealsOfAmerica: Iniciando scraping desde {self.url}")
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        try:
-            response = requests.get(self.url, headers=headers, timeout=30)
-            response.raise_for_status()
-            logging.info(f"DealsOfAmerica: Respuesta obtenida. Código de estado: {response.status_code}")
-        except requests.RequestException as e:
-            logging.error(f"DealsOfAmerica: Error al obtener la página: {e}")
-            return []
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
+    async def obtener_ofertas(self) -> List[Dict[str, Any]]:
+        logging.info(f"DealsOfAmerica: Iniciando scraping con Playwright desde {self.url}")
         ofertas = []
         
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch()
+                page = await browser.new_page()
+                
+                await page.goto(self.url, timeout=60000)
+                
+                # Esperar a que los contenedores de las ofertas estén presentes
+                await page.wait_for_selector('div.deal-item-container', timeout=30000)
+                
+                content = await page.content()
+                await browser.close()
+        except Exception as e:
+            logging.error(f"DealsOfAmerica: Error durante la navegación con Playwright: {e}")
+            return []
+
+        soup = BeautifulSoup(content, 'html.parser')
         secciones_oferta = soup.find_all('div', class_='deal-item-container')
-        logging.info(f"DealsOfAmerica: Se encontraron {len(secciones_oferta)} secciones de oferta")
+        logging.info(f"DealsOfAmerica: Se encontraron {len(secciones_oferta)} secciones de oferta tras renderizado.")
         
         for seccion in secciones_oferta:
             try:
                 oferta = self.extraer_oferta(seccion)
                 if oferta:
                     ofertas.append(oferta)
-                    logging.info(f"DealsOfAmerica: Oferta procesada: {oferta['titulo']}")
+                    logging.debug(f"DealsOfAmerica: Oferta procesada: {oferta['titulo']}")
             except Exception as e:
                 logging.error(f"DealsOfAmerica: Error al procesar una oferta: {e}", exc_info=True)
         
         if not ofertas:
-            logging.warning(f"DealsOfAmerica: No se encontraron ofertas en {self.url}")
+            logging.warning(f"DealsOfAmerica: No se encontraron ofertas en {self.url} después de usar Playwright.")
         else:
-            logging.info(f"DealsOfAmerica: Se encontraron {len(ofertas)} ofertas en total")
+            logging.info(f"DealsOfAmerica: Se encontraron {len(ofertas)} ofertas en total.")
         
         return ofertas
 
@@ -66,7 +71,7 @@ class DealsOfAmericaScraper(BaseScraper):
             return {
                 'titulo': titulo,
                 'precio': precio,
-                'precio_original': None, # La web no parece tener este campo de forma consistente
+                'precio_original': None,
                 'link': link,
                 'imagen': imagen,
                 'tag': self.tag,

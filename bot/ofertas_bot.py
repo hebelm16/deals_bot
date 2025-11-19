@@ -104,9 +104,15 @@ class OfertasBot:
             todas_las_ofertas = {"slickdeals": [], "dealnews": [], "dealsofamerica": []}
 
             self.logger.info("Iniciando scraping concurrente de todas las fuentes.")
-            tasks = [
-                asyncio.to_thread(scraper.obtener_ofertas) for scraper in self.scrapers
-            ]
+            tasks = []
+            for scraper in self.scrapers:
+                if isinstance(scraper, DealsOfAmericaScraper):
+                    # This scraper is async, so we can call it directly
+                    tasks.append(scraper.obtener_ofertas())
+                else:
+                    # These scrapers are sync, so they run in a thread
+                    tasks.append(asyncio.to_thread(scraper.obtener_ofertas))
+            
             results = await asyncio.gather(*tasks, return_exceptions=True)
             self.logger.info("Scraping concurrente finalizado.")
 
