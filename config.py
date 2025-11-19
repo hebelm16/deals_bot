@@ -10,6 +10,7 @@ class Config:
     USER_ID = os.getenv('TELEGRAM_USER_ID')
     SLICKDEALS_URL = os.getenv('SLICKDEALS_URL', 'https://slickdeals.net/')
     DEALSNEWS_URL = os.getenv('DEALSNEWS_URL', 'https://www.dealnews.com/')
+    DEALSOFAMERICA_URL = os.getenv('DEALSOFAMERICA_URL', 'https://www.dealsofamerica.com/')
     OFERTA_COOLDOWN = int(os.getenv('OFERTA_COOLDOWN', 72 * 3600))  # 72 horas por defecto
 
     @classmethod

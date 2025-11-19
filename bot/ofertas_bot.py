@@ -6,14 +6,15 @@ from telegram.ext import Application
 from telegram.error import NetworkError, RetryAfter, Conflict
 import random
 import os
-import fcntl
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from filelock import FileLock, Timeout
 
 from config import Config
 from database.db_manager import DBManager
 from scrapers.slickdeals_scraper import SlickdealsScraper
 from scrapers.dealnews_scraper import DealsnewsScraper
+from scrapers.dealsofamerica_scraper import DealsOfAmericaScraper
 
 
 class OfertasBot:
@@ -31,6 +32,11 @@ class OfertasBot:
                 "tag": "#Slickdeals",
                 "habilitado": True,
             },
+            "dealsofamerica": {
+                "url": self.config.DEALSOFAMERICA_URL,
+                "tag": "#DealsOfAmerica",
+                "habilitado": True,
+            },
         }
         self.scrapers = self.init_scrapers()
         self.application = None
@@ -38,8 +44,7 @@ class OfertasBot:
         self.is_running = True
         self.logger = logging.getLogger("OfertasBot")
         self.lock = asyncio.Lock()
-        self.lock_file = "/tmp/ofertasbot.lock"
-        self.lock_fd = None
+        self.lock_file = "ofertasbot.lock"
         self.max_ofertas_por_ejecucion = 20  # Limitamos a 20 ofertas por ejecución
 
     def init_scrapers(self) -> List:
@@ -50,90 +55,80 @@ class OfertasBot:
             DealsnewsScraper(
                 self.fuentes["dealnews"]["url"], self.fuentes["dealnews"]["tag"]
             ),
+            DealsOfAmericaScraper(
+                self.fuentes["dealsofamerica"]["url"], self.fuentes["dealsofamerica"]["tag"]
+            ),
         ]
 
     async def run(self) -> None:
-        if not await self.acquire_lock():
+        try:
+            lock = FileLock(self.lock_file, timeout=0)
+            with lock:
+                self.logger.info("Bloqueo adquirido exitosamente.")
+                self.application = Application.builder().token(self.config.TOKEN).build()
+                self.bot = Bot(self.config.TOKEN)
+                await self.application.initialize()
+                await self.application.start()
+                await self.application.updater.start_polling(drop_pending_updates=True)
+
+                while self.is_running:
+                    try:
+                        await self.check_ofertas()
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error en el ciclo principal: {e}", exc_info=True
+                        )
+                        await self.enviar_notificacion_error(e)
+                    finally:
+                        await asyncio.sleep(1800)  # 30 minutos
+
+                await self.application.stop()
+                await self.application.shutdown()
+        except Timeout:
             self.logger.error("Otra instancia del bot ya está en ejecución. Saliendo.")
             return
-
-        try:
-            self.application = Application.builder().token(self.config.TOKEN).build()
-            self.bot = Bot(self.config.TOKEN)
-            await self.application.initialize()
-            await self.application.start()
-            await self.application.updater.start_polling(drop_pending_updates=True)
-
-            while self.is_running:
-                try:
-                    await self.check_ofertas()
-                except Exception as e:
-                    self.logger.error(
-                        f"Error en el ciclo principal: {e}", exc_info=True
-                    )
-                    await self.enviar_notificacion_error(e)
-                finally:
-                    await asyncio.sleep(1800)  # 30 minutos
-
-            await self.application.stop()
-            await self.application.shutdown()
+        except Exception as e:
+            self.logger.critical(f"Error fatal al iniciar el bot: {e}", exc_info=True)
         finally:
-            self.release_lock()
+            self.logger.info("El bot se ha detenido.")
 
-    async def acquire_lock(self) -> bool:
-        try:
-            self.lock_fd = open(self.lock_file, "w")
-            fcntl.lockf(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.logger.info("Bloqueo adquirido exitosamente")
-            return True
-        except IOError:
-            self.logger.warning(
-                "No se pudo adquirir el bloqueo. Otra instancia puede estar en ejecución."
-            )
-            if self.lock_fd:
-                self.lock_fd.close()
-            return False
-
-    def release_lock(self) -> None:
-        if self.lock_fd:
-            fcntl.lockf(self.lock_fd, fcntl.LOCK_UN)
-            self.lock_fd.close()
-            try:
-                os.remove(self.lock_file)
-                self.logger.info("Bloqueo liberado y archivo de bloqueo eliminado")
-            except OSError:
-                self.logger.warning("No se pudo eliminar el archivo de bloqueo")
 
     async def stop(self) -> None:
         self.is_running = False
         if self.application:
             await self.application.stop()
             await self.application.shutdown()
-        self.release_lock()
 
     async def check_ofertas(self) -> None:
         async with self.lock:
-            todas_las_ofertas = {"slickdeals": [], "dealnews": []}
+            todas_las_ofertas = {"slickdeals": [], "dealnews": [], "dealsofamerica": []}
 
-            for scraper in self.scrapers:
-                try:
-                    self.logger.info(
-                        f"Iniciando scraping de {scraper.__class__.__name__}"
-                    )
-                    ofertas = await asyncio.to_thread(scraper.obtener_ofertas)
-                    self.logger.info(
-                        f"Se obtuvieron {len(ofertas)} ofertas de {scraper.__class__.__name__}"
-                    )
+            self.logger.info("Iniciando scraping concurrente de todas las fuentes.")
+            tasks = [
+                asyncio.to_thread(scraper.obtener_ofertas) for scraper in self.scrapers
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            self.logger.info("Scraping concurrente finalizado.")
 
-                    if isinstance(scraper, SlickdealsScraper):
-                        todas_las_ofertas["slickdeals"] = ofertas
-                    elif isinstance(scraper, DealsnewsScraper):
-                        todas_las_ofertas["dealnews"] = ofertas
-                except Exception as e:
+            for i, result in enumerate(results):
+                scraper = self.scrapers[i]
+                scraper_name = scraper.__class__.__name__
+                if isinstance(result, Exception):
                     self.logger.error(
-                        f"Error al obtener ofertas de {scraper.__class__.__name__}: {e}",
-                        exc_info=True,
+                        f"Error al obtener ofertas de {scraper_name}: {result}",
+                        exc_info=result,
                     )
+                else:
+                    self.logger.info(
+                        f"Se obtuvieron {len(result)} ofertas de {scraper_name}"
+                    )
+                    if isinstance(scraper, SlickdealsScraper):
+                        todas_las_ofertas["slickdeals"] = result
+                    elif isinstance(scraper, DealsnewsScraper):
+                        todas_las_ofertas["dealnews"] = result
+                    elif isinstance(scraper, DealsOfAmericaScraper):
+                        todas_las_ofertas["dealsofamerica"] = result
+
 
             nuevas_ofertas_slickdeals = [
                 oferta
@@ -145,6 +140,11 @@ class OfertasBot:
                 for oferta in todas_las_ofertas["dealnews"]
                 if not self.db_manager.es_oferta_repetida(oferta)
             ]
+            nuevas_ofertas_dealsofamerica = [
+                oferta
+                for oferta in todas_las_ofertas["dealsofamerica"]
+                if not self.db_manager.es_oferta_repetida(oferta)
+            ]
 
             self.logger.info(
                 f"Nuevas ofertas de Slickdeals: {len(nuevas_ofertas_slickdeals)}"
@@ -152,9 +152,14 @@ class OfertasBot:
             self.logger.info(
                 f"Nuevas ofertas de DealNews: {len(nuevas_ofertas_dealnews)}"
             )
+            self.logger.info(
+                f"Nuevas ofertas de DealsOfAmerica: {len(nuevas_ofertas_dealsofamerica)}"
+            )
 
             ofertas_a_enviar = self.seleccionar_ofertas_equilibradas(
-                nuevas_ofertas_slickdeals, nuevas_ofertas_dealnews
+                nuevas_ofertas_slickdeals,
+                nuevas_ofertas_dealnews,
+                nuevas_ofertas_dealsofamerica,
             )
 
             self.logger.info(f"Total de ofertas a enviar: {len(ofertas_a_enviar)}")
@@ -191,27 +196,35 @@ class OfertasBot:
         self,
         ofertas_slickdeals: List[Dict[str, Any]],
         ofertas_dealnews: List[Dict[str, Any]],
+        ofertas_dealsofamerica: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         total_ofertas = min(
             self.max_ofertas_por_ejecucion,
-            len(ofertas_slickdeals) + len(ofertas_dealnews),
+            len(ofertas_slickdeals)
+            + len(ofertas_dealnews)
+            + len(ofertas_dealsofamerica),
         )
-        mitad = total_ofertas // 2
+        tercio = total_ofertas // 3
 
         ofertas_seleccionadas = []
+        # Tomar una porción de cada fuente
         ofertas_seleccionadas.extend(
-            random.sample(ofertas_slickdeals, min(mitad, len(ofertas_slickdeals)))
+            random.sample(ofertas_slickdeals, min(tercio, len(ofertas_slickdeals)))
+        )
+        ofertas_seleccionadas.extend(
+            random.sample(ofertas_dealnews, min(tercio, len(ofertas_dealnews)))
         )
         ofertas_seleccionadas.extend(
             random.sample(
-                ofertas_dealnews,
-                min(total_ofertas - len(ofertas_seleccionadas), len(ofertas_dealnews)),
+                ofertas_dealsofamerica, min(tercio, len(ofertas_dealsofamerica))
             )
         )
 
         # Si aún no hemos alcanzado el total, completamos con las ofertas restantes
         if len(ofertas_seleccionadas) < total_ofertas:
-            ofertas_restantes = ofertas_slickdeals + ofertas_dealnews
+            ofertas_restantes = (
+                ofertas_slickdeals + ofertas_dealnews + ofertas_dealsofamerica
+            )
             ofertas_restantes = [
                 oferta
                 for oferta in ofertas_restantes
@@ -264,7 +277,13 @@ class OfertasBot:
         return False
 
     def formatear_mensaje_oferta(self, oferta: Dict[str, Any]) -> Dict[str, Any]:
-        emoji_tag = "🏷️" if oferta['tag'] == "#DealNews" else "🛍️"
+        emoji_map = {
+            "#DealNews": "🏷️",
+            "#Slickdeals": "🛍️",
+            "#DealsOfAmerica": "🇺🇸"
+        }
+        emoji_tag = emoji_map.get(oferta['tag'], '🔥')
+        
         mensaje = f"{emoji_tag} *¡OFERTA ESPECIAL!* {emoji_tag}\n\n"
         mensaje += f"🔥 *{oferta['titulo']}*\n\n"
         mensaje += f"💰 Precio: {oferta['precio']}\n"
