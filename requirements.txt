@@ -5,13 +5,10 @@ cachetools==5.3.1
 certifi==2025.11.12
 charset-normalizer==3.4.4
 filelock==3.13.1
-greenlet @ file:///C:/Users/hebel/OneDrive/Desktop/Deals_bot/deals_bot/greenlet-3.2.4-cp313-cp313-win_amd64.whl#sha256=554b03b6e73aaabec3745364d6239e9e012d64c68ccd0b8430c64ccc14939a8b
 h11==0.14.0
 httpcore==0.17.3
 httpx==0.24.1
 idna==3.11
-playwright==1.56.0
-pyee==13.0.0
 python-dotenv==1.0.0
 python-telegram-bot==20.3
 requests==2.31.0

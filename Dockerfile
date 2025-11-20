@@ -1,6 +1,5 @@
-# Usar la imagen oficial de Playwright que incluye Python y todas las dependencias.
-# Asegúrate de que la versión de Python coincida con la de tu proyecto si es necesario.
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# Usar una imagen más reciente de Playwright que se alinee con una versión de Python estable.
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
 # Establecer el directorio de trabajo dentro del contenedor
 WORKDIR /app
