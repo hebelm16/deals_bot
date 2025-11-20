@@ -10,6 +10,9 @@ import re
 from .base_scraper import BaseScraper
 
 class DealsOfAmericaScraper(BaseScraper):
+    def __init__(self, name: str, url: str, tag: str):
+        super().__init__(name, url, tag)
+
     async def obtener_ofertas(self) -> List[Dict[str, Any]]:
         logging.info(f"DealsOfAmerica: Iniciando scraping con Playwright desde {self.url}")
         ofertas = []
@@ -100,7 +103,6 @@ class DealsOfAmericaScraper(BaseScraper):
 
             if all([titulo, link]):
                 return {
-                    'id': self.generar_id_oferta(titulo, precio, link),
                     'titulo': titulo,
                     'precio': precio,
                     'precio_original': precio_original,
@@ -115,12 +117,3 @@ class DealsOfAmericaScraper(BaseScraper):
         except Exception as e:
             logging.error(f"DealsOfAmerica: Error al extraer datos de una sección: {e}")
             return None
-
-    @staticmethod
-    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
-        """Genera un ID único para la oferta."""
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
-
-    def obtener_ofertas_sync(self) -> List[Dict[str, Any]]:
-        """Wrapper síncrono para ejecutar el método asíncrono."""
-        return asyncio.run(self.obtener_ofertas())

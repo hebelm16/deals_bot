@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 
 class BaseScraper(ABC):
-    def __init__(self, url: str, tag: str):
+    def __init__(self, name: str, url: str, tag: str):
+        self.name = name
         self.url = url
         self.tag = tag
 
@@ -10,5 +11,5 @@ class BaseScraper(ABC):
         return ' '.join(texto.strip().split())
 
     @abstractmethod
-    def obtener_ofertas(self):
+    async def obtener_ofertas(self):
         pass

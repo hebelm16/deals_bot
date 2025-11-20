@@ -16,9 +16,9 @@ async def obtener_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     estado = "Estado actual de las fuentes:\n"
-    for nombre, fuente in bot.fuentes.items():
+    for nombre, scraper_info in bot.scrapers.items():
         estado += (
-            f"{nombre}: {'Habilitada' if fuente['habilitado'] else 'Deshabilitada'}\n"
+            f"{nombre}: {'Habilitada' if scraper_info['enabled'] else 'Deshabilitada'}\n"
         )
     await update.message.reply_text(estado)
 
@@ -32,7 +32,7 @@ async def habilitar_fuente(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     keyboard = [
         [
             InlineKeyboardButton(nombre, callback_data=f"habilitar_{nombre}")
-            for nombre in bot.fuentes.keys()
+            for nombre in bot.scrapers.keys()
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -52,7 +52,7 @@ async def deshabilitar_fuente(
     keyboard = [
         [
             InlineKeyboardButton(nombre, callback_data=f"deshabilitar_{nombre}")
-            for nombre in bot.fuentes.keys()
+            for nombre in bot.scrapers.keys()
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -70,13 +70,11 @@ async def manejar_callback_fuente(
 
     accion, nombre_fuente = query.data.split("_")
     if accion == "habilitar":
-        bot.fuentes[nombre_fuente]["habilitado"] = True
+        bot.scrapers[nombre_fuente]["enabled"] = True
         mensaje = f"Fuente {nombre_fuente} habilitada."
     else:
-        bot.fuentes[nombre_fuente]["habilitado"] = False
+        bot.scrapers[nombre_fuente]["enabled"] = False
         mensaje = f"Fuente {nombre_fuente} deshabilitada."
-
-    bot.scrapers = bot.init_scrapers()
 
     try:
         await query.edit_message_text(text=mensaje)

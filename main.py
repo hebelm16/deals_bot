@@ -2,29 +2,26 @@ import asyncio
 import logging
 from bot.ofertas_bot import OfertasBot
 from utils.logging_config import setup_logging
+from config import Config
 
 def main():
-    # Filtro para ignorar los errores de polling de Telegram
-    class TelegramPollingFilter(logging.Filter):
-        def filter(self, record):
-            return 'telegram.ext.Updater' not in record.name and 'httpx' not in record.name
-
-    # Aplicar el filtro al logger raíz
-    logging.getLogger().addFilter(TelegramPollingFilter())
-    setup_logging()
+    """
+    Punto de entrada principal de la aplicación.
+    Configura el logging, inicializa y ejecuta el bot.
+    """
+    config = Config()
+    setup_logging(config)
+    
     bot = OfertasBot()
     
-    async def run_bot():
-        try:
-            await bot.run()
-        except Exception as e:
-            bot.logger.error(f"Error en la ejecución del bot: {e}", exc_info=True)
-        finally:
-            await bot.stop()
-
-    asyncio.run(run_bot())
+    try:
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        logging.getLogger("OfertasBot").info("Bot detenido manualmente por el usuario.")
+    except Exception as e:
+        logging.getLogger("OfertasBot").critical(
+            f"Error fatal no capturado en el nivel superior: {e}", exc_info=True
+        )
 
 if __name__ == "__main__":
     main()
-
-#hey

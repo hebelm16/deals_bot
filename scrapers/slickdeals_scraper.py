@@ -9,6 +9,9 @@ import time
 from .base_scraper import BaseScraper
 
 class SlickdealsScraper(BaseScraper):
+    def __init__(self, name: str, url: str, tag: str):
+        super().__init__(name, url, tag)
+
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def obtener_ofertas(self) -> List[Dict[str, Any]]:
         logging.info(f"Slickdeals: Iniciando scraping desde {self.url}")
@@ -36,10 +39,7 @@ class SlickdealsScraper(BaseScraper):
                     logging.warning("Se detectó una tarjeta de carga, ignorando...")
                     continue
                 
-                oferta_id = self.generar_id_oferta(titulo, precio, link)
-                
                 nueva_oferta = {
-                    'id': oferta_id,
                     'titulo': titulo,
                     'precio': precio,
                     'precio_original': precio_original,
@@ -64,10 +64,6 @@ class SlickdealsScraper(BaseScraper):
             logging.info(f"Slickdeals: Se encontraron {len(ofertas)} ofertas en total")
         
         return ofertas
-
-    @staticmethod
-    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
 
     @staticmethod
     def limpiar_texto(texto: str) -> str:

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 from telegram import Bot
 from telegram.ext import Application
 from telegram.error import NetworkError, RetryAfter, Conflict, BadRequest
@@ -9,59 +9,47 @@ import os
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from filelock import FileLock, Timeout
+import importlib
+import inspect
 
 from config import Config
 from database.db_manager import DBManager
+from bot.handlers import setup_handlers
 import re
-from scrapers.slickdeals_scraper import SlickdealsScraper
-from scrapers.dealnews_scraper import DealsnewsScraper
-from scrapers.dealsofamerica_scraper import DealsOfAmericaScraper
-
 
 class OfertasBot:
     def __init__(self):
         self.config = Config()
+        self.logger = logging.getLogger("OfertasBot")
         self.db_manager = DBManager(self.config.DATABASE)
-        self.fuentes = {
-            "dealnews": {
-                "url": self.config.DEALSNEWS_URL,
-                "tag": "#DealNews",
-                "habilitado": True,
-            },
-            "slickdeals": {
-                "url": self.config.SLICKDEALS_URL,
-                "tag": "#Slickdeals",
-                "habilitado": True,
-            },
-            "dealsofamerica": {
-                "url": self.config.DEALSOFAMERICA_URL,
-                "tag": "#DealsOfAmerica",
-                "habilitado": True,
-            },
-        }
         self.scrapers = self.init_scrapers()
         self.application = None
         self.bot = None
         self.is_running = True
-        self.logger = logging.getLogger("OfertasBot")
         self.lock = asyncio.Lock()
         self.lock_file = "ofertasbot.lock"
-        self.max_ofertas_por_ejecucion = 20  # Limitamos a 20 ofertas por ejecución
 
-    def init_scrapers(self) -> List:
-        scrapers = []
-        if self.fuentes["slickdeals"]["habilitado"]:
-            scrapers.append(SlickdealsScraper(
-                self.fuentes["slickdeals"]["url"], self.fuentes["slickdeals"]["tag"]
-            ))
-        if self.fuentes["dealnews"]["habilitado"]:
-            scrapers.append(DealsnewsScraper(
-                self.fuentes["dealnews"]["url"], self.fuentes["dealnews"]["tag"]
-            ))
-        if self.fuentes["dealsofamerica"]["habilitado"]:
-            scrapers.append(DealsOfAmericaScraper(
-                self.fuentes["dealsofamerica"]["url"], self.fuentes["dealsofamerica"]["tag"]
-            ))
+    def init_scrapers(self) -> Dict[str, Any]:
+        scrapers = {}
+        for scraper_config in self.config.SCRAPERS:
+            try:
+                module = importlib.import_module(scraper_config["module"])
+                scraper_class = getattr(module, scraper_config["class"])
+                scraper_instance = scraper_class(
+                    name=scraper_config["name"],
+                    url=scraper_config["url"],
+                    tag=scraper_config["tag"],
+                )
+                scrapers[scraper_config["name"]] = {
+                    "instance": scraper_instance,
+                    "enabled": scraper_config["enabled"]
+                }
+                self.logger.info(f"Scraper '{scraper_config['name']}' cargado exitosamente.")
+            except (ImportError, AttributeError) as e:
+                self.logger.error(
+                    f"No se pudo cargar el scraper '{scraper_config['name']}': {e}",
+                    exc_info=True,
+                )
         return scrapers
 
     async def run(self) -> None:
@@ -69,8 +57,11 @@ class OfertasBot:
             lock = FileLock(self.lock_file, timeout=0)
             with lock:
                 self.logger.info("Bloqueo adquirido exitosamente.")
+                await self.db_manager.init_db()  # Inicializar la DB asíncrona
                 self.application = Application.builder().token(self.config.TOKEN).build()
                 self.bot = Bot(self.config.TOKEN)
+                self.application.bot_data["bot"] = self
+                setup_handlers(self.application, self)
                 await self.application.initialize()
                 await self.application.start()
                 await self.application.updater.start_polling(drop_pending_updates=True)
@@ -84,7 +75,7 @@ class OfertasBot:
                         )
                         await self.enviar_notificacion_error(e)
                     finally:
-                        await asyncio.sleep(1800)  # 30 minutos
+                        await asyncio.sleep(self.config.LOOP_INTERVAL_SECONDS)
 
                 await self.application.stop()
                 await self.application.shutdown()
@@ -103,156 +94,135 @@ class OfertasBot:
             await self.application.stop()
             await self.application.shutdown()
 
+    async def _scrape_all_sources(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Ejecuta todos los scrapers habilitados de forma concurrente y devuelve sus resultados."""
+        scraped_deals = {name: [] for name, scraper_info in self.scrapers.items() if scraper_info["enabled"]}
+        self.logger.info("Iniciando scraping concurrente de todas las fuentes habilitadas.")
+        
+        enabled_scrapers = [scraper_info["instance"] for scraper_info in self.scrapers.values() if scraper_info["enabled"]]
+        tasks = []
+        for scraper in enabled_scrapers:
+            if inspect.iscoroutinefunction(scraper.obtener_ofertas):
+                tasks.append(scraper.obtener_ofertas())
+            else:
+                tasks.append(asyncio.to_thread(scraper.obtener_ofertas))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.logger.info("Scraping concurrente finalizado.")
+
+        for i, result in enumerate(results):
+            scraper = enabled_scrapers[i]
+            if isinstance(result, Exception):
+                self.logger.error(f"Error al obtener ofertas de {scraper.name}: {result}", exc_info=result)
+            else:
+                self.logger.info(f"Se obtuvieron {len(result)} ofertas de {scraper.name}")
+                scraped_deals[scraper.name] = result
+        
+        return scraped_deals
+
+    async def _filter_new_deals(self, all_deals: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+        """Filtra las ofertas para quedarse solo con las que no están en la base de datos."""
+        self.logger.info("Optimizando la verificación de duplicados...")
+        recent_ids = await self.db_manager.obtener_ids_recientes()
+        self.logger.info(f"Cargados {len(recent_ids)} IDs de ofertas recientes para verificación.")
+
+        def is_new(deal: Dict[str, Any]) -> bool:
+            deal_id = self.db_manager.generar_id_oferta(deal)
+            return deal_id not in recent_ids
+
+        new_deals_by_source = {
+            name: [deal for deal in deals if is_new(deal)]
+            for name, deals in all_deals.items()
+        }
+
+        for name, deals in new_deals_by_source.items():
+            self.logger.info(f"Nuevas ofertas de {name}: {len(deals)}")
+            
+        return new_deals_by_source
+
+    async def _process_new_deals(self, new_deals_by_source: Dict[str, List[Dict[str, Any]]]) -> int:
+        """Selecciona, envía y guarda las nuevas ofertas."""
+        deals_to_send = self.seleccionar_ofertas_equilibradas(
+            *[deals for deals in new_deals_by_source.values()]
+        )
+        self.logger.info(f"Total de ofertas a enviar: {len(deals_to_send)}")
+
+        sent_deals_count = 0
+        for deal in deals_to_send:
+            if await self.enviar_oferta_con_reintento(deal):
+                await self.db_manager.guardar_oferta(deal)
+                sent_deals_count += 1
+                self.logger.info(f"Oferta enviada y guardada: {deal['titulo']} - Fuente: {deal['tag']}")
+            else:
+                self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {deal['titulo']}")
+            
+            await asyncio.sleep(self.config.SEND_OFFER_INTERVAL_SECONDS)
+        
+        return sent_deals_count
+
     async def check_ofertas(self) -> None:
+        """
+        Orquesta el proceso completo de buscar, filtrar, enviar y limpiar ofertas.
+        """
         async with self.lock:
-            todas_las_ofertas = {"slickdeals": [], "dealnews": [], "dealsofamerica": []}
-
-            self.logger.info("Iniciando scraping concurrente de todas las fuentes.")
-            tasks = []
-            # Todos los scrapers se ejecutan en hilos separados para no bloquear el bot
-            for scraper in self.scrapers:
-                if isinstance(scraper, DealsOfAmericaScraper): # Playwright scraper
-                    tasks.append(asyncio.to_thread(scraper.obtener_ofertas_sync))
-                else:
-                    tasks.append(asyncio.to_thread(scraper.obtener_ofertas))
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            self.logger.info("Scraping concurrente finalizado.")
-
-            for i, result in enumerate(results):
-                scraper = self.scrapers[i]
-                scraper_name = scraper.__class__.__name__
-                if isinstance(result, Exception):
-                    self.logger.error(
-                        f"Error al obtener ofertas de {scraper_name}: {result}",
-                        exc_info=result,
-                    )
-                else:
-                    self.logger.info(
-                        f"Se obtuvieron {len(result)} ofertas de {scraper_name}"
-                    )
-                    if isinstance(scraper, SlickdealsScraper):
-                        todas_las_ofertas["slickdeals"] = result
-                    elif isinstance(scraper, DealsnewsScraper):
-                        todas_las_ofertas["dealnews"] = result
-                    elif isinstance(scraper, DealsOfAmericaScraper):
-                        todas_las_ofertas["dealsofamerica"] = result
-
-
-            nuevas_ofertas_slickdeals = [
-                oferta
-                for oferta in todas_las_ofertas["slickdeals"]
-                if not self.db_manager.es_oferta_repetida(oferta)
-            ]
-            nuevas_ofertas_dealnews = [
-                oferta
-                for oferta in todas_las_ofertas["dealnews"]
-                if not self.db_manager.es_oferta_repetida(oferta)
-            ]
-            nuevas_ofertas_dealsofamerica = [
-                oferta
-                for oferta in todas_las_ofertas["dealsofamerica"]
-                if not self.db_manager.es_oferta_repetida(oferta)
-            ]
-
-            self.logger.info(
-                f"Nuevas ofertas de Slickdeals: {len(nuevas_ofertas_slickdeals)}"
+            # 1. Scrape all sources
+            scraped_deals = await self._scrape_all_sources()
+            
+            # 2. Filter for new deals
+            new_deals = await self._filter_new_deals(scraped_deals)
+            
+            # 3. Process and send new deals
+            sent_count = await self._process_new_deals(new_deals)
+            
+            # 4. Clean up old deals from the database
+            cleaned_count = await self.db_manager.limpiar_ofertas_antiguas(
+                dias=self.config.DIAS_LIMPIEZA_OFERTAS_ANTIGUAS
             )
-            self.logger.info(
-                f"Nuevas ofertas de DealNews: {len(nuevas_ofertas_dealnews)}"
-            )
-            self.logger.info(
-                f"Nuevas ofertas de DealsOfAmerica: {len(nuevas_ofertas_dealsofamerica)}"
-            )
-
-            ofertas_a_enviar = self.seleccionar_ofertas_equilibradas(
-                nuevas_ofertas_slickdeals,
-                nuevas_ofertas_dealnews,
-                nuevas_ofertas_dealsofamerica,
-            )
-
-            self.logger.info(f"Total de ofertas a enviar: {len(ofertas_a_enviar)}")
-
-            ofertas_enviadas_esta_vez = 0
-
-            for oferta in ofertas_a_enviar:
-                if await self.enviar_oferta_con_reintento(oferta):
-                    self.db_manager.guardar_oferta(oferta)
-                    ofertas_enviadas_esta_vez += 1
-                    self.logger.info(
-                        f"Oferta enviada y guardada: {oferta['titulo']} - Fuente: {oferta['tag']}"
-                    )
-                else:
-                    self.logger.error(
-                        f"No se pudo enviar la oferta después de varios intentos: {oferta['titulo']}"
-                    )
-
-                await asyncio.sleep(
-                    5
-                )  # Espera 5 segundos entre cada envío para evitar flood
-
-            ofertas_antiguas_eliminadas = self.db_manager.limpiar_ofertas_antiguas()
-
-            self.logger.info(f"Resumen de ejecución:")
-            self.logger.info(
-                f"  - Ofertas enviadas en esta ejecución: {ofertas_enviadas_esta_vez}"
-            )
-            self.logger.info(
-                f"  - Ofertas antiguas eliminadas: {ofertas_antiguas_eliminadas}"
-            )
+            
+            # 5. Log summary
+            self.logger.info("Resumen de ejecución:")
+            self.logger.info(f"  - Ofertas enviadas en esta ejecución: {sent_count}")
+            self.logger.info(f"  - Ofertas antiguas eliminadas: {cleaned_count}")
 
     def seleccionar_ofertas_equilibradas(
-        self,
-        ofertas_slickdeals: List[Dict[str, Any]],
-        ofertas_dealnews: List[Dict[str, Any]],
-        ofertas_dealsofamerica: List[Dict[str, Any]],
+        self, *listas_de_ofertas: List[List[Dict[str, Any]]]
     ) -> List[Dict[str, Any]]:
-        total_ofertas = min(
-            self.max_ofertas_por_ejecucion,
-            len(ofertas_slickdeals)
-            + len(ofertas_dealnews)
-            + len(ofertas_dealsofamerica),
-        )
-        tercio = total_ofertas // 3
-
+        
         ofertas_seleccionadas = []
-        # Tomar una porción de cada fuente
-        ofertas_seleccionadas.extend(
-            random.sample(ofertas_slickdeals, min(tercio, len(ofertas_slickdeals)))
-        )
-        ofertas_seleccionadas.extend(
-            random.sample(ofertas_dealnews, min(tercio, len(ofertas_dealnews)))
-        )
-        ofertas_seleccionadas.extend(
-            random.sample(
-                ofertas_dealsofamerica, min(tercio, len(ofertas_dealsofamerica))
-            )
-        )
+        listas_no_vacias = [lista for lista in listas_de_ofertas if lista]
+        
+        if not listas_no_vacias:
+            return []
 
-        # Si aún no hemos alcanzado el total, completamos con las ofertas restantes
-        if len(ofertas_seleccionadas) < total_ofertas:
-            ofertas_restantes = (
-                ofertas_slickdeals + ofertas_dealnews + ofertas_dealsofamerica
-            )
-            ofertas_restantes = [
-                oferta
-                for oferta in ofertas_restantes
-                if oferta not in ofertas_seleccionadas
-            ]
-            ofertas_seleccionadas.extend(
-                random.sample(
-                    ofertas_restantes,
-                    min(
-                        total_ofertas - len(ofertas_seleccionadas),
-                        len(ofertas_restantes),
-                    ),
-                )
-            )
-
+        max_ofertas = self.config.MAX_OFERTAS_POR_EJECUCION
+        num_fuentes = len(listas_no_vacias)
+        
+        # Iteradores para cada lista de ofertas
+        iteradores = [iter(lista) for lista in listas_no_vacias]
+        
+        while len(ofertas_seleccionadas) < max_ofertas:
+            ofertas_agregadas_en_ciclo = 0
+            for i in range(num_fuentes):
+                try:
+                    oferta = next(iteradores[i])
+                    if oferta not in ofertas_seleccionadas:
+                        ofertas_seleccionadas.append(oferta)
+                        ofertas_agregadas_en_ciclo += 1
+                        if len(ofertas_seleccionadas) == max_ofertas:
+                            break
+                except StopIteration:
+                    # Esta fuente no tiene más ofertas
+                    continue
+            
+            if ofertas_agregadas_en_ciclo == 0:
+                # No hay más ofertas nuevas en ninguna fuente
+                break
+        
         random.shuffle(ofertas_seleccionadas)
         return ofertas_seleccionadas
-
-    async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any], max_intentos: int = 3) -> bool:
-        for intento in range(max_intentos):
+        
+    async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any]) -> bool:
+        for intento in range(self.config.SEND_OFFER_MAX_RETRIES):
             try:
                 mensaje_formateado = self.formatear_mensaje_oferta(oferta)
                 if oferta.get('imagen') and oferta['imagen'] != 'No disponible':
@@ -276,9 +246,9 @@ class OfertasBot:
                 self.logger.warning(f"Límite de velocidad alcanzado. Esperando {retry_time} segundos.")
                 await asyncio.sleep(retry_time)
             except (NetworkError, Conflict) as e:
-                self.logger.error(f"Error al enviar oferta (intento {intento + 1}/{max_intentos}): {e}")
-                if intento < max_intentos - 1:
-                    await asyncio.sleep(5 * (intento + 1))
+                self.logger.error(f"Error al enviar oferta (intento {intento + 1}/{self.config.SEND_OFFER_MAX_RETRIES}): {e}")
+                if intento < self.config.SEND_OFFER_MAX_RETRIES - 1:
+                    await asyncio.sleep(self.config.SEND_OFFER_RETRY_SLEEP_SECONDS * (intento + 1))
             except Exception as e:
                 self.logger.error(f"Error inesperado al enviar oferta '{oferta.get('titulo')}': {e}", exc_info=True)
                 return False
@@ -292,21 +262,20 @@ class OfertasBot:
         }
         emoji_tag = emoji_map.get(oferta['tag'], '✨')
         
-        # Usamos Markdown V1 que es más permisivo y no requiere escapar caracteres.
-        mensaje = f"{emoji_tag} *¡NUEVA OFERTA!* {emoji_tag}\n\n"
-        mensaje += f"🔥 *{oferta['titulo']}*\n\n"
-        mensaje += f"💰 *Precio: {oferta['precio']}*\n"
+        # Usamos HTML para un formato más rico.
+        mensaje = f"{emoji_tag} <b>¡NUEVA OFERTA!</b> {emoji_tag}\n\n"
+        mensaje += f"🔥 <b>{oferta['titulo']}</b>\n\n"
+        mensaje += f"💰 <b>Precio: {oferta['precio']}</b>\n"
 
         if oferta.get('precio_original') and oferta['precio_original'] != oferta['precio']:
-            # Markdown V1 no soporta tachado (~), así que lo mostramos como texto normal.
-            mensaje += f"💸 Antes: {oferta['precio_original']}\n"
+            mensaje += f"💸 Antes: <del>{oferta['precio_original']}</del>\n"
 
         if oferta.get('cupon'):
-            mensaje += f"\n🎟️ *CUPÓN*: `{oferta['cupon']}`\n"
+            mensaje += f"\n🎟️ <b>CUPÓN</b>: <code>{oferta['cupon']}</code>\n"
 
         if oferta.get('info_cupon'):
             info_cupon_texto = oferta['info_cupon'][:250]
-            mensaje += f"\nℹ️ _Info adicional: {info_cupon_texto}..._\n"
+            mensaje += f"\nℹ️ <i>Info adicional: {info_cupon_texto}...</i>\n"
 
         # Crear el botón inline
         keyboard = [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=oferta['link'])]]
@@ -315,16 +284,16 @@ class OfertasBot:
         return {
             "text": mensaje,
             "reply_markup": reply_markup,
-            "parse_mode": 'Markdown'
+            "parse_mode": 'HTML'
         }
 
     async def enviar_notificacion_error(self, error: Exception) -> None:
-        mensaje = f"🚨 *Error en el bot de ofertas* 🚨\n\n"
+        mensaje = f"🚨 <b>Error en el bot de ofertas</b> 🚨\n\n"
         mensaje += f"Detalles del error:\n"
-        mensaje += f"`{type(error).__name__}`: `{str(error)}`"
+        mensaje += f"<code>{type(error).__name__}</code>: <code>{str(error)}</code>"
         try:
             await self.bot.send_message(
-                chat_id=self.config.CHANNEL_ID, text=mensaje, parse_mode="Markdown"
+                chat_id=self.config.CHANNEL_ID, text=mensaje, parse_mode="HTML"
             )
         except Exception as e:
             self.logger.error(

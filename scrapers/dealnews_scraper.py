@@ -10,6 +10,9 @@ import re
 from .base_scraper import BaseScraper
 
 class DealsnewsScraper(BaseScraper):
+    def __init__(self, name: str, url: str, tag: str):
+        super().__init__(name, url, tag)
+
     @retry(stop_max_attempt_number=3, wait_fixed=5000)
     def obtener_ofertas(self) -> List[Dict[str, Any]]:
         logging.info(f"DealNews: Iniciando scraping desde {self.url}")
@@ -94,17 +97,12 @@ class DealsnewsScraper(BaseScraper):
         logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
         
         if all([oferta['titulo'], oferta['precio'], oferta['link']]):
-            oferta['id'] = self.generar_id_oferta(oferta['titulo'], oferta['precio'], oferta['link'])
             oferta['tag'] = self.tag
             oferta['timestamp'] = int(time.time())
             return oferta
         else:
             logging.warning("DealNews: Oferta incompleta ignorada")
             return None
-
-    @staticmethod
-    def generar_id_oferta(titulo: str, precio: str, link: str) -> str:
-        return hashlib.md5(f"{titulo}|{precio}|{link}".encode()).hexdigest()
 
     @staticmethod
     def limpiar_texto(texto: str) -> str:

@@ -3,13 +3,12 @@ from logging.handlers import RotatingFileHandler
 import sys
 import os
 
-def setup_logging():
-    log_dir = 'logs'
-    if not os.path.exists(log_dir):
+def setup_logging(config):
+    log_dir = os.path.dirname(config.LOG_FILE)
+    if log_dir and not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    log_file = os.path.join(log_dir, 'bot_log.txt')
-    file_handler = RotatingFileHandler(log_file, maxBytes=5000000, backupCount=5)
+    file_handler = RotatingFileHandler(config.LOG_FILE, maxBytes=5000000, backupCount=5)
     console_handler = logging.StreamHandler(sys.stdout)
 
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -17,7 +16,7 @@ def setup_logging():
     console_handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(config.LOG_LEVEL)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
