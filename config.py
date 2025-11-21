@@ -20,7 +20,7 @@ class Config:
     # Database settings
     DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = int(os.getenv('DIAS_LIMPIEZA_OFERTAS_ANTIGUAS', 30))
 
-    # Logging settings
+    # Logging settingss
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
     LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
 
