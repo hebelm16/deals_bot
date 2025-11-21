@@ -146,11 +146,16 @@ class OfertasBot:
     def _telegram_error_callback(self, context) -> None:
         """Maneja errores de Telegram durante el polling. NO es async."""
         try:
-            self.logger.error(f"Error de Telegram: {context.error}")
-            if isinstance(context.error, NetworkError):
-                self.logger.warning("Error de red detectado. El bot intentará reconectarse automáticamente.")
-            elif isinstance(context.error, TimedOut):
-                self.logger.warning("Timeout de Telegram. El bot intentará reconectarse automáticamente.")
+            error_msg = str(context.error) if hasattr(context, 'error') else str(context)
+            self.logger.error(f"Error de Telegram: {error_msg}")
+            
+            if hasattr(context, 'error'):
+                if isinstance(context.error, NetworkError):
+                    self.logger.warning("Error de red detectado. El bot intentará reconectarse automáticamente.")
+                elif isinstance(context.error, TimedOut):
+                    self.logger.warning("Timeout de Telegram. El bot intentará reconectarse automáticamente.")
+                elif isinstance(context.error, Conflict):
+                    self.logger.warning("Conflicto: Otra instancia del bot está activa. El bot se reconectará.")
         except Exception as e:
             self.logger.error(f"Error al manejar error de Telegram: {e}")
 
