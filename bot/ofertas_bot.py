@@ -95,19 +95,9 @@ class OfertasBot:
                 self.application = (
                     Application.builder()
                     .token(self.config.TOKEN)
-                    .read_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
-                    .write_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
-                    .connect_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
-                    .pool_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
                     .build()
                 )
-                self.bot = Bot(
-                    self.config.TOKEN,
-                    read_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                    write_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                    connect_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                    pool_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                )
+                self.bot = Bot(self.config.TOKEN)
                 self.application.bot_data["bot"] = self
                 setup_handlers(self.application, self)
                 await self.application.initialize()
@@ -153,16 +143,16 @@ class OfertasBot:
             await self.close_browser()  # Asegurarse de cerrar el navegador
             self.logger.info("El bot se ha detenido.")
 
-    async def _telegram_error_callback(self, context) -> None:
-        """Maneja errores de Telegram durante el polling."""
+    def _telegram_error_callback(self, context) -> None:
+        """Maneja errores de Telegram durante el polling. NO es async."""
         try:
-            self.logger.error(f"Error de Telegram: {context.error}", exc_info=context.error)
+            self.logger.error(f"Error de Telegram: {context.error}")
             if isinstance(context.error, NetworkError):
                 self.logger.warning("Error de red detectado. El bot intentará reconectarse automáticamente.")
             elif isinstance(context.error, TimedOut):
                 self.logger.warning("Timeout de Telegram. El bot intentará reconectarse automáticamente.")
         except Exception as e:
-            self.logger.error(f"Error al manejar error de Telegram: {e}", exc_info=True)
+            self.logger.error(f"Error al manejar error de Telegram: {e}")
 
     async def stop(self) -> None:
         self.is_running = False
