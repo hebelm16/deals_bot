@@ -1,5 +1,6 @@
-# Usar una imagen más reciente de Playwright que se alinee con una versión de Python estable.
-FROM mcr.microsoft.com/playwright/python:v1.56.0-jammy
+# Usar una imagen de Python 3.10 con Playwright preinstalado
+# Esta imagen es estable y soporta versiones de Playwright >= 1.40.0
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
 # Establecer el directorio de trabajo dentro del contenedor
 WORKDIR /app
@@ -8,7 +9,8 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Instalar las dependencias de Python
-RUN pip install -r requirements.txt
+# El navegador de Playwright ya viene instalado en la imagen
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el resto de los archivos de tu proyecto al contenedor
 COPY . .
