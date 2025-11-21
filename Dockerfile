@@ -1,5 +1,5 @@
 # Usar una imagen más reciente de Playwright que se alinee con una versión de Python estable.
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.56.0-jammy
 
 # Establecer el directorio de trabajo dentro del contenedor
 WORKDIR /app
