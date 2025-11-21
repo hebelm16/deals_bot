@@ -17,6 +17,11 @@ class Config:
     SEND_OFFER_MAX_RETRIES = int(os.getenv('SEND_OFFER_MAX_RETRIES', 3))
     SEND_OFFER_RETRY_SLEEP_SECONDS = int(os.getenv('SEND_OFFER_RETRY_SLEEP_SECONDS', 5))
 
+    # Telegram polling settings
+    TELEGRAM_POLLING_TIMEOUT = int(os.getenv('TELEGRAM_POLLING_TIMEOUT', 30))  # segundos
+    TELEGRAM_POLLING_INTERVAL = float(os.getenv('TELEGRAM_POLLING_INTERVAL', 0.0))  # segundos
+    TELEGRAM_NETWORK_RETRY_SLEEP = int(os.getenv('TELEGRAM_NETWORK_RETRY_SLEEP', 5))  # segundos
+
     # Database settings
     DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = int(os.getenv('DIAS_LIMPIEZA_OFERTAS_ANTIGUAS', 30))
 

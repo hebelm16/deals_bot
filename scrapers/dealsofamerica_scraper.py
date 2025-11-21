@@ -15,9 +15,13 @@ class DealsOfAmericaScraper(BaseScraper):
 
     async def launch_browser(self):
         logging.info("DealsOfAmerica: Lanzando un nuevo navegador Playwright...")
-        p = await async_playwright().start()
-        browser = await p.chromium.launch(headless=True)
-        return browser
+        try:
+            p = await async_playwright().start()
+            browser = await p.chromium.launch(headless=True)
+            return browser
+        except Exception as e:
+            logging.error(f"DealsOfAmerica: Error al lanzar Playwright: {e}", exc_info=True)
+            raise
 
     async def obtener_ofertas(self, browser) -> List[Dict[str, Any]]:
         logging.info(f"DealsOfAmerica: Iniciando scraping con Playwright desde {self.url}")

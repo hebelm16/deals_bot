@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any, Set
 from telegram import Bot
 from telegram.ext import Application
-from telegram.error import NetworkError, RetryAfter, Conflict, BadRequest
+from telegram.error import NetworkError, RetryAfter, Conflict, BadRequest, TimedOut
 import random
 import os
 import time
@@ -58,16 +58,30 @@ class OfertasBot:
         for scraper_info in self.scrapers.values():
             if scraper_info["enabled"] and hasattr(scraper_info["instance"], 'launch_browser'):
                 self.logger.info("Lanzando navegador para scrapers dinámicos...")
-                # Asumimos que el primer scraper con `launch_browser` puede lanzar el navegador.
-                self.browser = await scraper_info["instance"].launch_browser()
+                try:
+                    # Asumimos que el primer scraper con `launch_browser` puede lanzar el navegador.
+                    self.browser = await scraper_info["instance"].launch_browser()
+                    self.logger.info("Navegador Playwright lanzado exitosamente.")
+                except Exception as e:
+                    self.logger.error(
+                        f"No se pudo lanzar el navegador Playwright: {e}. "
+                        f"El scraper {scraper_info['instance'].name} será deshabilitado.",
+                        exc_info=True
+                    )
+                    # Deshabilitar este scraper si falla el navegador
+                    scraper_info["enabled"] = False
                 break
 
     async def close_browser(self):
         """Cierra el navegador si está activo."""
         if self.browser:
-            self.logger.info("Cerrando el navegador Playwright...")
-            await self.browser.close()
-            self.browser = None
+            try:
+                self.logger.info("Cerrando el navegador Playwright...")
+                await self.browser.close()
+            except Exception as e:
+                self.logger.warning(f"Error al cerrar el navegador: {e}")
+            finally:
+                self.browser = None
 
     async def run(self) -> None:
         try:
@@ -77,17 +91,49 @@ class OfertasBot:
                 await self.db_manager.init_db()
                 await self.launch_browser()  # Lanzar navegador
 
-                self.application = Application.builder().token(self.config.TOKEN).build()
-                self.bot = Bot(self.config.TOKEN)
+                # Crear application con timeout robusto
+                self.application = (
+                    Application.builder()
+                    .token(self.config.TOKEN)
+                    .read_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
+                    .write_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
+                    .connect_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
+                    .pool_timeout(self.config.TELEGRAM_POLLING_TIMEOUT)
+                    .build()
+                )
+                self.bot = Bot(
+                    self.config.TOKEN,
+                    read_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                    write_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                    connect_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                    pool_timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                )
                 self.application.bot_data["bot"] = self
                 setup_handlers(self.application, self)
                 await self.application.initialize()
                 await self.application.start()
-                await self.application.updater.start_polling(drop_pending_updates=True)
+                
+                # Usar polling con configuración robusta para errores de red
+                try:
+                    await self.application.updater.start_polling(
+                        drop_pending_updates=True,
+                        error_callback=self._telegram_error_callback,
+                        timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                        poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
+                    )
+                except Exception as polling_error:
+                    self.logger.error(f"Error al iniciar polling: {polling_error}", exc_info=True)
+                    raise
 
                 while self.is_running:
                     try:
                         await self.check_ofertas()
+                    except (NetworkError, TimedOut) as net_error:
+                        # Errores de red temporales - registrar e intentar de nuevo
+                        self.logger.warning(
+                            f"Error de red temporal en el ciclo principal: {net_error}. Reintentando..."
+                        )
+                        await asyncio.sleep(5)  # Esperar 5 segundos antes de reintentar
                     except Exception as e:
                         self.logger.error(
                             f"Error en el ciclo principal: {e}", exc_info=True
@@ -107,6 +153,16 @@ class OfertasBot:
             await self.close_browser()  # Asegurarse de cerrar el navegador
             self.logger.info("El bot se ha detenido.")
 
+    async def _telegram_error_callback(self, context) -> None:
+        """Maneja errores de Telegram durante el polling."""
+        try:
+            self.logger.error(f"Error de Telegram: {context.error}", exc_info=context.error)
+            if isinstance(context.error, NetworkError):
+                self.logger.warning("Error de red detectado. El bot intentará reconectarse automáticamente.")
+            elif isinstance(context.error, TimedOut):
+                self.logger.warning("Timeout de Telegram. El bot intentará reconectarse automáticamente.")
+        except Exception as e:
+            self.logger.error(f"Error al manejar error de Telegram: {e}", exc_info=True)
 
     async def stop(self) -> None:
         self.is_running = False
