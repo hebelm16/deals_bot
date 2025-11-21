@@ -13,35 +13,55 @@ class DealsOfAmericaScraper(BaseScraper):
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
-    async def obtener_ofertas(self) -> List[Dict[str, Any]]:
+    async def launch_browser(self):
+        logging.info("DealsOfAmerica: Lanzando un nuevo navegador Playwright...")
+        p = await async_playwright().start()
+        browser = await p.chromium.launch(headless=True)
+        return browser
+
+    async def obtener_ofertas(self, browser) -> List[Dict[str, Any]]:
         logging.info(f"DealsOfAmerica: Iniciando scraping con Playwright desde {self.url}")
         ofertas = []
+        page = None
         
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                
-                await page.goto(self.url, timeout=60000)
+            page = await browser.new_page()
+            
+            # Aumentar el tiempo de espera para la navegación
+            await page.goto(self.url, timeout=90000, wait_until='domcontentloaded')
 
-                # Intentar aceptar el banner de cookies si aparece
-                try:
-                    logging.info("DealsOfAmerica: Buscando banner de cookies...")
-                    await page.click('#onetrust-accept-btn-handler', timeout=5000)
-                    logging.info("DealsOfAmerica: Banner de cookies aceptado.")
-                    await page.wait_for_load_state('networkidle') # Esperar a que la página se estabilice
-                except PlaywrightTimeoutError:
-                    logging.info("DealsOfAmerica: No se encontró el banner de cookies o ya estaba aceptado.")
-                
-                # Esperar a que los contenedores de las ofertas estén presentes
-                await page.wait_for_selector('section.deal.row', timeout=30000)
-                
-                content = await page.content()
-                
-                await browser.close()
-        except (PlaywrightTimeoutError, Exception) as e:
+            # Intentar aceptar el banner de cookies si aparece
+            try:
+                logging.info("DealsOfAmerica: Buscando banner de cookies...")
+                # Usar una espera más flexible para el botón
+                accept_button = page.locator('#onetrust-accept-btn-handler')
+                await accept_button.wait_for(timeout=7000)
+                await accept_button.click()
+                logging.info("DealsOfAmerica: Banner de cookies aceptado.")
+                # Esperar un poco para que la acción se procese
+                await page.wait_for_timeout(2000)
+            except PlaywrightTimeoutError:
+                logging.info("DealsOfAmerica: No se encontró el banner de cookies o ya estaba aceptado.")
+            
+            # Esperar a que los contenedores de las ofertas estén presentes
+            await page.wait_for_selector('section.deal.row', timeout=45000)
+            
+            content = await page.content()
+            
+        except PlaywrightTimeoutError as e:
+            logging.error(f"DealsOfAmerica: Timeout con Playwright: {e}")
+            if page:
+                # Guardar captura de pantalla para depuración en caso de timeout
+                screenshot_path = "debug_dealsofamerica.png"
+                await page.screenshot(path=screenshot_path)
+                logging.info(f"DealsOfAmerica: Captura de pantalla guardada en {screenshot_path}")
+            return []
+        except Exception as e:
             logging.error(f"DealsOfAmerica: Error durante la navegación con Playwright: {e}")
             return []
+        finally:
+            if page:
+                await page.close()
 
         soup = BeautifulSoup(content, 'html.parser')
         secciones_oferta = soup.find_all('section', class_='deal row')

@@ -28,6 +28,7 @@ class OfertasBot:
         self.is_running = True
         self.lock = asyncio.Lock()
         self.lock_file = "ofertasbot.lock"
+        self.browser = None
 
     def init_scrapers(self) -> Dict[str, Any]:
         scrapers = {}
@@ -52,12 +53,30 @@ class OfertasBot:
                 )
         return scrapers
 
+    async def launch_browser(self):
+        """Lanza el navegador si algún scraper lo necesita."""
+        for scraper_info in self.scrapers.values():
+            if scraper_info["enabled"] and hasattr(scraper_info["instance"], 'launch_browser'):
+                self.logger.info("Lanzando navegador para scrapers dinámicos...")
+                # Asumimos que el primer scraper con `launch_browser` puede lanzar el navegador.
+                self.browser = await scraper_info["instance"].launch_browser()
+                break
+
+    async def close_browser(self):
+        """Cierra el navegador si está activo."""
+        if self.browser:
+            self.logger.info("Cerrando el navegador Playwright...")
+            await self.browser.close()
+            self.browser = None
+
     async def run(self) -> None:
         try:
             lock = FileLock(self.lock_file, timeout=0)
             with lock:
                 self.logger.info("Bloqueo adquirido exitosamente.")
-                await self.db_manager.init_db()  # Inicializar la DB asíncrona
+                await self.db_manager.init_db()
+                await self.launch_browser()  # Lanzar navegador
+
                 self.application = Application.builder().token(self.config.TOKEN).build()
                 self.bot = Bot(self.config.TOKEN)
                 self.application.bot_data["bot"] = self
@@ -85,6 +104,7 @@ class OfertasBot:
         except Exception as e:
             self.logger.critical(f"Error fatal al iniciar el bot: {e}", exc_info=True)
         finally:
+            await self.close_browser()  # Asegurarse de cerrar el navegador
             self.logger.info("El bot se ha detenido.")
 
 
@@ -102,15 +122,35 @@ class OfertasBot:
         enabled_scrapers = [scraper_info["instance"] for scraper_info in self.scrapers.values() if scraper_info["enabled"]]
         tasks = []
         for scraper in enabled_scrapers:
-            if inspect.iscoroutinefunction(scraper.obtener_ofertas):
-                tasks.append(scraper.obtener_ofertas())
+            method = scraper.obtener_ofertas
+            is_async = inspect.iscoroutinefunction(method)
+            
+            # Inspeccionar la firma del método para ver si necesita el navegador
+            sig = inspect.signature(method)
+            if 'browser' in sig.parameters:
+                if not self.browser:
+                    self.logger.error(f"El scraper {scraper.name} necesita un navegador, pero no hay uno activo.")
+                    continue
+                if is_async:
+                    tasks.append(method(self.browser))
+                else:
+                    # No es ideal ejecutar una tarea de navegador en un hilo síncrono, pero se maneja
+                    tasks.append(asyncio.to_thread(method, self.browser))
             else:
-                tasks.append(asyncio.to_thread(scraper.obtener_ofertas))
+                if is_async:
+                    tasks.append(method())
+                else:
+                    tasks.append(asyncio.to_thread(method))
         
+        if not tasks:
+            self.logger.warning("No hay tareas de scraping para ejecutar.")
+            return scraped_deals
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         self.logger.info("Scraping concurrente finalizado.")
 
         for i, result in enumerate(results):
+            # Es necesario un mapeo más robusto si las tareas no se mantienen en orden
             scraper = enabled_scrapers[i]
             if isinstance(result, Exception):
                 self.logger.error(f"Error al obtener ofertas de {scraper.name}: {result}", exc_info=result)
