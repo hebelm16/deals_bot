@@ -133,7 +133,7 @@ async def mis_alertas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     texto = "🔔 <b>Tus alertas activas:</b>\n\n"
     for s in suscripciones:
         texto += f"- <code>{s}</code>\n"
-    texto += "\nPara borrar una, usa: /borrar_alerta <palabra>"
+    texto += "\nPara borrar una, usa: /borrar_alerta &lt;palabra&gt;"
     
     await update.message.reply_text(texto, parse_mode="HTML")
 
