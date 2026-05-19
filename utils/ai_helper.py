@@ -27,15 +27,34 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
             f"Tu respuesta (solo la frase, sin explicaciones):"
         )
         
-        response = await client.aio.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        texto = response.text.strip()
-        # Limpiar si empieza con comillas
-        if texto.startswith('"') and texto.endswith('"'):
-            texto = texto[1:-1]
-        return texto
-    except Exception as e:
-        logger.error(f"Error al generar gancho con IA: {e}")
-        return None
+        try:
+            response = await client.aio.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+            )
+            texto = response.text.strip()
+            # Limpiar si empieza con comillas
+            if texto.startswith('"') and texto.endswith('"'):
+                texto = texto[1:-1]
+            return texto
+        except Exception as e:
+            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and os.getenv("GEMINI_API_KEY_BACKUP"):
+                logger.warning("Límite de cuota alcanzado con la llave principal. Intentando con llave de respaldo...")
+                client_backup = genai.Client(api_key=os.getenv("GEMINI_API_KEY_BACKUP"))
+                try:
+                    response_backup = await client_backup.aio.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt,
+                    )
+                    texto_backup = response_backup.text.strip()
+                    if texto_backup.startswith('"') and texto_backup.endswith('"'):
+                        texto_backup = texto_backup[1:-1]
+                    return texto_backup
+                except Exception as e_backup:
+                    logger.warning(f"La llave de respaldo también falló: {e_backup}")
+                    return None
+            elif "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                logger.warning("Límite de cuota gratuita de IA alcanzado (Error 429). Publicando sin gancho...")
+            else:
+                logger.error(f"Error al generar gancho con IA: {e}")
+            return None

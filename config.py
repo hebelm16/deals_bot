@@ -29,6 +29,7 @@ class Config:
 
     # AI settings
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+    GEMINI_API_KEY_BACKUP = os.getenv('GEMINI_API_KEY_BACKUP', '')
 
     # Database settings
     DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = int(os.getenv('DIAS_LIMPIEZA_OFERTAS_ANTIGUAS', 30))
