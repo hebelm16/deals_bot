@@ -19,7 +19,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         
         prompt = (
             f"Escribe una sola frase corta, MUY llamativa y usando jerga dominicana (como si fueras un promotor de RD) "
-            f"para animar a comprar esta oferta en un canal de Telegram. Usa palabras dominicanas (ej. klk, nítido, montro, jevi, dando la hora, un palo, etc.) "
+            f"para animar a comprar esta oferta en un canal de Telegram. Usa palabras dominicanas (ej. klk, nítido, montro, jevi, mete mano, eso ta' duro, de lo mio, mi loco, wao para, rompe to', manito, eto se ta tornando, y frases actualizadas 2026.) "
             f"pero mantenlo entendible. Usa máximo 1 emoji.\n\n"
             f"Producto: {titulo}\n"
             f"{precio_str}\n"
