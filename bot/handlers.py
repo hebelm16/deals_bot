@@ -3,6 +3,8 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
 
 def setup_handlers(application, bot):
+    application.add_handler(CommandHandler("start", comando_ayuda))
+    application.add_handler(CommandHandler("ayuda", comando_ayuda))
     application.add_handler(CommandHandler("estado", obtener_estado))
     application.add_handler(CommandHandler("habilitar", habilitar_fuente))
     application.add_handler(CommandHandler("deshabilitar", deshabilitar_fuente))
@@ -11,6 +13,19 @@ def setup_handlers(application, bot):
     application.add_handler(CommandHandler("borrar_alerta", borrar_alerta))
     application.add_handler(CallbackQueryHandler(manejar_callback_fuente))
 
+
+async def comando_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    mensaje = (
+        "👋 <b>¡Hola! Soy Deals Bot</b> 🛍️\n\n"
+        "Te ayudo a cazar las mejores ofertas. Puedes suscribirte a palabras clave "
+        "y te avisaré por mensaje directo apenas encuentre algo que coincida.\n\n"
+        "<b>Comandos disponibles:</b>\n"
+        "🔸 /alerta <code>&lt;palabra&gt;</code> - Crea una nueva alerta (ej. <i>/alerta ssd</i>)\n"
+        "🔸 /mis_alertas - Mira a qué estás suscrito\n"
+        "🔸 /borrar_alerta <code>&lt;palabra&gt;</code> - Elimina una suscripción\n"
+        "🔸 /ayuda - Muestra este mensaje\n"
+    )
+    await update.message.reply_text(mensaje, parse_mode="HTML")
 
 async def obtener_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     bot = context.bot_data["bot"]

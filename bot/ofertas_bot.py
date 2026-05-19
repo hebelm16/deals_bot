@@ -7,7 +7,7 @@ from telegram.error import NetworkError, RetryAfter, Conflict, BadRequest, Timed
 import random
 import os
 import time
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from filelock import FileLock, Timeout
 import importlib
 import inspect
@@ -103,6 +103,21 @@ class OfertasBot:
                 setup_handlers(self.application, self)
                 await self.application.initialize()
                 await self.application.start()
+                
+                # Configurar menú de comandos
+                try:
+                    comandos = [
+                        BotCommand("start", "Muestra el mensaje de bienvenida y ayuda"),
+                        BotCommand("ayuda", "Muestra los comandos disponibles"),
+                        BotCommand("alerta", "Crea una alerta para una palabra clave"),
+                        BotCommand("mis_alertas", "Mira a qué palabras estás suscrito"),
+                        BotCommand("borrar_alerta", "Elimina una alerta existente"),
+                        BotCommand("estado", "Ver estado de los scrapers (Admin)"),
+                    ]
+                    await self.bot.set_my_commands(comandos)
+                    self.logger.info("Comandos de Telegram configurados en el menú.")
+                except Exception as e:
+                    self.logger.error(f"No se pudieron configurar los comandos: {e}")
                 
                 # Usar polling con configuración robusta para errores de red
                 try:
