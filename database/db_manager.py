@@ -24,6 +24,14 @@ class DBManager:
                     timestamp INTEGER
                 )
             ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS suscripciones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,
+                    chat_id TEXT,
+                    keyword TEXT
+                )
+            ''')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_ofertas_timestamp ON ofertas(timestamp)')
             await conn.commit()
 
@@ -89,5 +97,49 @@ class DBManager:
                     'link': row[3],
                     'timestamp': row[4]
                 }
+                for row in await cursor.fetchall()
+            ]
+
+    async def agregar_suscripcion(self, user_id: str, chat_id: str, keyword: str) -> bool:
+        async with aiosqlite.connect(self.database) as conn:
+            # Check if it already exists
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "SELECT id FROM suscripciones WHERE user_id = ? AND keyword = ?", 
+                (user_id, keyword.lower())
+            )
+            if await cursor.fetchone():
+                return False  # Ya está suscrito
+            
+            await conn.execute(
+                "INSERT INTO suscripciones (user_id, chat_id, keyword) VALUES (?, ?, ?)",
+                (user_id, chat_id, keyword.lower())
+            )
+            await conn.commit()
+            return True
+
+    async def eliminar_suscripcion(self, user_id: str, keyword: str) -> bool:
+        async with aiosqlite.connect(self.database) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "DELETE FROM suscripciones WHERE user_id = ? AND keyword = ?", 
+                (user_id, keyword.lower())
+            )
+            deleted = cursor.rowcount > 0
+            await conn.commit()
+            return deleted
+
+    async def obtener_suscripciones_por_usuario(self, user_id: str) -> List[str]:
+        async with aiosqlite.connect(self.database) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute("SELECT keyword FROM suscripciones WHERE user_id = ?", (user_id,))
+            return [row[0] for row in await cursor.fetchall()]
+
+    async def obtener_todas_las_suscripciones(self) -> List[Dict[str, str]]:
+        async with aiosqlite.connect(self.database) as conn:
+            cursor = await conn.cursor()
+            await cursor.execute("SELECT user_id, chat_id, keyword FROM suscripciones")
+            return [
+                {'user_id': row[0], 'chat_id': row[1], 'keyword': row[2]}
                 for row in await cursor.fetchall()
             ]

@@ -239,12 +239,48 @@ class OfertasBot:
         )
         self.logger.info(f"Total de ofertas a enviar: {len(deals_to_send)}")
 
+        # Obtener todas las suscripciones activas
+        suscripciones = await self.db_manager.obtener_todas_las_suscripciones()
+
         sent_deals_count = 0
         for deal in deals_to_send:
             if await self.enviar_oferta_con_reintento(deal):
                 await self.db_manager.guardar_oferta(deal)
                 sent_deals_count += 1
                 self.logger.info(f"Oferta enviada y guardada: {deal.titulo} - Fuente: {deal.tag}")
+                
+                # Enviar alertas a los usuarios suscritos
+                for sub in suscripciones:
+                    # Buscar coincidencia de palabra clave
+                    match = False
+                    if sub['keyword'].lower() in deal.titulo.lower():
+                        match = True
+                    elif deal.info_cupon and sub['keyword'].lower() in deal.info_cupon.lower():
+                        match = True
+                        
+                    if match:
+                        try:
+                            mensaje_formateado = self.formatear_mensaje_oferta(deal)
+                            mensaje_dm = f"🔔 <b>¡ALERTA DE PALABRA CLAVE: {sub['keyword']}!</b> 🔔\n\n" + mensaje_formateado["text"]
+                            if deal.imagen and deal.imagen != 'No disponible':
+                                await self.bot.send_photo(
+                                    chat_id=sub['chat_id'],
+                                    photo=deal.imagen,
+                                    caption=mensaje_dm,
+                                    reply_markup=mensaje_formateado["reply_markup"],
+                                    parse_mode="HTML"
+                                )
+                            else:
+                                await self.bot.send_message(
+                                    chat_id=sub['chat_id'],
+                                    text=mensaje_dm,
+                                    reply_markup=mensaje_formateado["reply_markup"],
+                                    parse_mode="HTML"
+                                )
+                            self.logger.info(f"Alerta enviada a {sub['chat_id']} por la palabra {sub['keyword']}")
+                        except Exception as e:
+                            self.logger.error(f"Error al enviar alerta a {sub['chat_id']}: {e}")
+
             else:
                 self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {deal.titulo}")
             
