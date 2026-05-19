@@ -129,11 +129,10 @@ class OfertasBot:
                         webhook_path = f"/{self.config.TOKEN}"
                         full_webhook_url = f"{self.config.WEBHOOK_URL.rstrip('/')}{webhook_path}"
                         
-                        await self.application.bot.set_webhook(url=full_webhook_url)
-                        
                         await self.application.updater.start_webhook(
                             listen="0.0.0.0",
                             port=self.config.PORT,
+                            webhook_url=full_webhook_url,
                             url_path=webhook_path
                         )
                     else:
