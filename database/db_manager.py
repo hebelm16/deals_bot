@@ -3,6 +3,7 @@ import hashlib
 import time
 import logging
 from typing import Dict, Any, List
+from utils.models import Oferta
 
 class DBManager:
     def __init__(self, database: str):
@@ -23,36 +24,37 @@ class DBManager:
                     timestamp INTEGER
                 )
             ''')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_ofertas_timestamp ON ofertas(timestamp)')
             await conn.commit()
 
-    def generar_id_oferta(self, oferta: Dict[str, Any]) -> str:
+    def generar_id_oferta(self, oferta: Oferta) -> str:
         campos = [
-            oferta['titulo'],
-            oferta['precio'],
-            oferta['link'],
-            oferta.get('imagen', ''),
-            oferta.get('precio_original', '')
+            oferta.titulo,
+            oferta.precio,
+            oferta.link,
+            oferta.imagen or '',
+            oferta.precio_original or ''
         ]
         contenido = '|'.join([str(campo) for campo in campos if campo])
         return hashlib.sha256(contenido.encode()).hexdigest()
 
 
 
-    async def guardar_oferta(self, oferta: Dict[str, Any]) -> None:
+    async def guardar_oferta(self, oferta: Oferta) -> None:
         oferta_id = self.generar_id_oferta(oferta)
         async with aiosqlite.connect(self.database) as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO ofertas (id, titulo, precio, precio_original, link, imagen, tag, cupon, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     oferta_id,
-                    oferta['titulo'],
-                    oferta['precio'],
-                    oferta.get('precio_original'),
-                    oferta['link'],
-                    oferta.get('imagen'),
-                    oferta['tag'],
-                    oferta.get('cupon'),
-                    int(time.time())
+                    oferta.titulo,
+                    oferta.precio,
+                    oferta.precio_original,
+                    oferta.link,
+                    oferta.imagen,
+                    oferta.tag,
+                    oferta.cupon,
+                    oferta.timestamp
                 )
             )
             await conn.commit()

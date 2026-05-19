@@ -1,21 +1,25 @@
 import logging
 from bs4 import BeautifulSoup
-import requests
+import httpx
 from typing import List, Dict, Any
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_fixed
 import hashlib
 import time
 
 from .base_scraper import BaseScraper
+from utils.models import Oferta
 
 class SlickdealsScraper(BaseScraper):
+    emoji = "🔥"
+
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def obtener_ofertas(self) -> List[Dict[str, Any]]:
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+    async def obtener_ofertas(self) -> List[Oferta]:
         logging.info(f"Slickdeals: Iniciando scraping desde {self.url}")
-        response = requests.get(self.url)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(self.url, timeout=30)
         logging.info(f"Slickdeals: Respuesta obtenida. Código de estado: {response.status_code}")
         soup = BeautifulSoup(response.content, 'html.parser')
         ofertas = []
@@ -39,17 +43,15 @@ class SlickdealsScraper(BaseScraper):
                     logging.warning("Se detectó una tarjeta de carga, ignorando...")
                     continue
                 
-                nueva_oferta = {
-                    'titulo': titulo,
-                    'precio': precio,
-                    'precio_original': precio_original,
-                    'link': link,
-                    'imagen': imagen,
-                    'tag': self.tag,
-                    'timestamp': int(time.time()),
-                    'cupon': None,
-                    'info_cupon': None
-                }
+                nueva_oferta = Oferta.create(
+                    titulo=titulo,
+                    precio=precio,
+                    link=link,
+                    tag=self.tag,
+                    emoji=self.emoji,
+                    precio_original=precio_original,
+                    imagen=imagen
+                )
                 
                 ofertas.append(nueva_oferta)
                 logging.info(f"Slickdeals: Oferta procesada: {titulo}")
@@ -59,7 +61,7 @@ class SlickdealsScraper(BaseScraper):
         
         if not ofertas:
             logging.warning(f"Slickdeals: No se encontraron ofertas en {self.url}")
-            raise ValueError("No se encontraron ofertas válidas en Slickdeals")
+            return []
         else:
             logging.info(f"Slickdeals: Se encontraron {len(ofertas)} ofertas en total")
         

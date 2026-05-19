@@ -15,6 +15,7 @@ import inspect
 from config import Config
 from database.db_manager import DBManager
 from bot.handlers import setup_handlers
+from utils.models import Oferta
 import re
 
 class OfertasBot:
@@ -165,7 +166,7 @@ class OfertasBot:
             await self.application.stop()
             await self.application.shutdown()
 
-    async def _scrape_all_sources(self) -> Dict[str, List[Dict[str, Any]]]:
+    async def _scrape_all_sources(self) -> Dict[str, List[Oferta]]:
         """Ejecuta todos los scrapers habilitados de forma concurrente y devuelve sus resultados."""
         scraped_deals = {name: [] for name, scraper_info in self.scrapers.items() if scraper_info["enabled"]}
         self.logger.info("Iniciando scraping concurrente de todas las fuentes habilitadas.")
@@ -211,13 +212,13 @@ class OfertasBot:
         
         return scraped_deals
 
-    async def _filter_new_deals(self, all_deals: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+    async def _filter_new_deals(self, all_deals: Dict[str, List[Oferta]]) -> Dict[str, List[Oferta]]:
         """Filtra las ofertas para quedarse solo con las que no están en la base de datos."""
         self.logger.info("Optimizando la verificación de duplicados...")
         recent_ids = await self.db_manager.obtener_ids_recientes()
         self.logger.info(f"Cargados {len(recent_ids)} IDs de ofertas recientes para verificación.")
 
-        def is_new(deal: Dict[str, Any]) -> bool:
+        def is_new(deal: Oferta) -> bool:
             deal_id = self.db_manager.generar_id_oferta(deal)
             return deal_id not in recent_ids
 
@@ -231,7 +232,7 @@ class OfertasBot:
             
         return new_deals_by_source
 
-    async def _process_new_deals(self, new_deals_by_source: Dict[str, List[Dict[str, Any]]]) -> int:
+    async def _process_new_deals(self, new_deals_by_source: Dict[str, List[Oferta]]) -> int:
         """Selecciona, envía y guarda las nuevas ofertas."""
         deals_to_send = self.seleccionar_ofertas_equilibradas(
             *[deals for deals in new_deals_by_source.values()]
@@ -243,9 +244,9 @@ class OfertasBot:
             if await self.enviar_oferta_con_reintento(deal):
                 await self.db_manager.guardar_oferta(deal)
                 sent_deals_count += 1
-                self.logger.info(f"Oferta enviada y guardada: {deal['titulo']} - Fuente: {deal['tag']}")
+                self.logger.info(f"Oferta enviada y guardada: {deal.titulo} - Fuente: {deal.tag}")
             else:
-                self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {deal['titulo']}")
+                self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {deal.titulo}")
             
             await asyncio.sleep(self.config.SEND_OFFER_INTERVAL_SECONDS)
         
@@ -276,8 +277,8 @@ class OfertasBot:
             self.logger.info(f"  - Ofertas antiguas eliminadas: {cleaned_count}")
 
     def seleccionar_ofertas_equilibradas(
-        self, *listas_de_ofertas: List[List[Dict[str, Any]]]
-    ) -> List[Dict[str, Any]]:
+        self, *listas_de_ofertas: List[List[Oferta]]
+    ) -> List[Oferta]:
         
         ofertas_seleccionadas = []
         listas_no_vacias = [lista for lista in listas_de_ofertas if lista]
@@ -312,14 +313,14 @@ class OfertasBot:
         random.shuffle(ofertas_seleccionadas)
         return ofertas_seleccionadas
         
-    async def enviar_oferta_con_reintento(self, oferta: Dict[str, Any]) -> bool:
+    async def enviar_oferta_con_reintento(self, oferta: Oferta) -> bool:
         for intento in range(self.config.SEND_OFFER_MAX_RETRIES):
             try:
                 mensaje_formateado = self.formatear_mensaje_oferta(oferta)
-                if oferta.get('imagen') and oferta['imagen'] != 'No disponible':
+                if oferta.imagen and oferta.imagen != 'No disponible':
                     await self.bot.send_photo(
                         chat_id=self.config.CHANNEL_ID, 
-                        photo=oferta['imagen'], 
+                        photo=oferta.imagen, 
                         caption=mensaje_formateado["text"], 
                         reply_markup=mensaje_formateado["reply_markup"],
                         parse_mode=mensaje_formateado["parse_mode"]
@@ -341,35 +342,30 @@ class OfertasBot:
                 if intento < self.config.SEND_OFFER_MAX_RETRIES - 1:
                     await asyncio.sleep(self.config.SEND_OFFER_RETRY_SLEEP_SECONDS * (intento + 1))
             except Exception as e:
-                self.logger.error(f"Error inesperado al enviar oferta '{oferta.get('titulo')}': {e}", exc_info=True)
+                self.logger.error(f"Error inesperado al enviar oferta '{oferta.titulo}': {e}", exc_info=True)
                 return False
         return False
 
-    def formatear_mensaje_oferta(self, oferta: Dict[str, Any]) -> Dict[str, Any]:
-        emoji_map = {
-            "#DealNews": "📰",
-            "#Slickdeals": "🔥",
-            "#DealsOfAmerica": "🇺🇸",
-        }
-        emoji_tag = emoji_map.get(oferta['tag'], '✨')
+    def formatear_mensaje_oferta(self, oferta: Oferta) -> Dict[str, Any]:
+        emoji_tag = oferta.emoji
         
         # Usamos HTML para un formato más rico.
         mensaje = f"{emoji_tag} <b>¡NUEVA OFERTA!</b> {emoji_tag}\n\n"
-        mensaje += f"🔥 <b>{oferta['titulo']}</b>\n\n"
-        mensaje += f"💰 <b>Precio: {oferta['precio']}</b>\n"
+        mensaje += f"🔥 <b>{oferta.titulo}</b>\n\n"
+        mensaje += f"💰 <b>Precio: {oferta.precio}</b>\n"
 
-        if oferta.get('precio_original') and oferta['precio_original'] != oferta['precio']:
-            mensaje += f"💸 Antes: <del>{oferta['precio_original']}</del>\n"
+        if oferta.precio_original and oferta.precio_original != oferta.precio:
+            mensaje += f"💸 Antes: <del>{oferta.precio_original}</del>\n"
 
-        if oferta.get('cupon'):
-            mensaje += f"\n🎟️ <b>CUPÓN</b>: <code>{oferta['cupon']}</code>\n"
+        if oferta.cupon:
+            mensaje += f"\n🎟️ <b>CUPÓN</b>: <code>{oferta.cupon}</code>\n"
 
-        if oferta.get('info_cupon'):
-            info_cupon_texto = oferta['info_cupon'][:250]
+        if oferta.info_cupon:
+            info_cupon_texto = oferta.info_cupon[:250]
             mensaje += f"\nℹ️ <i>Info adicional: {info_cupon_texto}...</i>\n"
 
         # Crear el botón inline
-        keyboard = [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=oferta['link'])]]
+        keyboard = [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=oferta.link)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         return {

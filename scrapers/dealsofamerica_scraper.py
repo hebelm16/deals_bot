@@ -1,6 +1,6 @@
 import logging
 from bs4 import BeautifulSoup
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import asyncio
 import time
@@ -8,8 +8,11 @@ import hashlib
 import re
 
 from .base_scraper import BaseScraper
+from utils.models import Oferta
 
 class DealsOfAmericaScraper(BaseScraper):
+    emoji = "🇺🇸"
+
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
@@ -23,7 +26,7 @@ class DealsOfAmericaScraper(BaseScraper):
             logging.error(f"DealsOfAmerica: Error al lanzar Playwright: {e}", exc_info=True)
             raise
 
-    async def obtener_ofertas(self, browser) -> List[Dict[str, Any]]:
+    async def obtener_ofertas(self, browser) -> List[Oferta]:
         logging.info(f"DealsOfAmerica: Iniciando scraping con Playwright desde {self.url}")
         ofertas = []
         page = None
@@ -87,7 +90,7 @@ class DealsOfAmericaScraper(BaseScraper):
         
         return ofertas
 
-    def extraer_oferta(self, seccion: BeautifulSoup) -> Dict[str, Any] | None:
+    def extraer_oferta(self, seccion: BeautifulSoup) -> Optional[Oferta]:
         try:
             # El título y el enlace están en la sección principal de detalles
             title_section = seccion.find('div', class_='title')
@@ -126,17 +129,17 @@ class DealsOfAmericaScraper(BaseScraper):
                     cupon = match.group(1)
 
             if all([titulo, link]):
-                return {
-                    'titulo': titulo,
-                    'precio': precio,
-                    'precio_original': precio_original,
-                    'link': link,
-                    'imagen': imagen,
-                    'tag': self.tag,
-                    'timestamp': int(time.time()),
-                    'cupon': cupon,
-                    'info_cupon': info_cupon
-                }
+                return Oferta.create(
+                    titulo=titulo,
+                    precio=precio,
+                    link=link,
+                    tag=self.tag,
+                    emoji=self.emoji,
+                    precio_original=precio_original,
+                    imagen=imagen,
+                    cupon=cupon,
+                    info_cupon=info_cupon
+                )
             return None
         except Exception as e:
             logging.error(f"DealsOfAmerica: Error al extraer datos de una sección: {e}")

@@ -1,27 +1,36 @@
 import logging
 from bs4 import BeautifulSoup
-import requests
-from typing import List, Dict, Any
-from retrying import retry
+import httpx
+from typing import List, Dict, Any, Optional
+from tenacity import retry, stop_after_attempt, wait_fixed
 import hashlib
 import time
 import re
+import random
 
 from .base_scraper import BaseScraper
+from utils.models import Oferta
 
 class DealsnewsScraper(BaseScraper):
+    emoji = "📰"
+
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
-    @retry(stop_max_attempt_number=3, wait_fixed=5000)
-    def obtener_ofertas(self) -> List[Dict[str, Any]]:
-        logging.info(f"DealNews: Iniciando scraping desde {self.url}")
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+    async def obtener_ofertas(self) -> List[Oferta]:
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+        ]
+        headers = {'User-Agent': random.choice(user_agents)}
         try:
-            response = requests.get(self.url, headers=headers, timeout=30)
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.url, headers=headers, timeout=30)
             response.raise_for_status()
             logging.info(f"DealNews: Respuesta obtenida. Código de estado: {response.status_code}")
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logging.error(f"DealNews: Error al obtener la página: {e}")
             return []
         
@@ -50,7 +59,7 @@ class DealsnewsScraper(BaseScraper):
         
         return ofertas
 
-    def extraer_oferta(self, seccion):
+    def extraer_oferta(self, seccion) -> Optional[Oferta]:
         oferta = {}
         
         titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
@@ -96,10 +105,18 @@ class DealsnewsScraper(BaseScraper):
             oferta['cupon'] = None
         logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
         
-        if all([oferta['titulo'], oferta['precio'], oferta['link']]):
-            oferta['tag'] = self.tag
-            oferta['timestamp'] = int(time.time())
-            return oferta
+        if all([oferta.get('titulo'), oferta.get('precio'), oferta.get('link')]):
+            return Oferta.create(
+                titulo=oferta['titulo'],
+                precio=oferta['precio'],
+                link=oferta['link'],
+                tag=self.tag,
+                emoji=self.emoji,
+                precio_original=oferta.get('precio_original'),
+                imagen=oferta.get('imagen'),
+                cupon=oferta.get('cupon'),
+                info_cupon=oferta.get('info_cupon')
+            )
         else:
             logging.warning("DealNews: Oferta incompleta ignorada")
             return None
