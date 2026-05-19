@@ -22,6 +22,14 @@ class Config:
     TELEGRAM_POLLING_INTERVAL = float(os.getenv('TELEGRAM_POLLING_INTERVAL', 0.0))  # segundos
     TELEGRAM_NETWORK_RETRY_SLEEP = int(os.getenv('TELEGRAM_NETWORK_RETRY_SLEEP', 5))  # segundos
 
+    # Webhooks settings
+    USE_WEBHOOKS = os.getenv('USE_WEBHOOKS', 'False').lower() in ('true', '1', 't')
+    WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # ej: https://mi-bot.up.railway.app
+    PORT = int(os.getenv('PORT', 8443))  # Railway asigna esta variable automáticamente
+
+    # AI settings
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+
     # Database settings
     DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = int(os.getenv('DIAS_LIMPIEZA_OFERTAS_ANTIGUAS', 30))
 

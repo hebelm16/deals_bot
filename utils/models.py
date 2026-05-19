@@ -12,6 +12,7 @@ class Oferta:
     precio_original: Optional[str] = None
     imagen: Optional[str] = None
     cupon: Optional[str] = None
+    gancho_ia: Optional[str] = None
     info_cupon: Optional[str] = None
     emoji: str = "✨"
 

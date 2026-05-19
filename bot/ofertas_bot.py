@@ -11,11 +11,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from filelock import FileLock, Timeout
 import importlib
 import inspect
+from tenacity import retry, wait_fixed, stop_after_attempt, retry_if_exception_type
 
 from config import Config
 from database.db_manager import DBManager
 from bot.handlers import setup_handlers
 from utils.models import Oferta
+from utils.ai_helper import generar_gancho_ia
 import re
 
 class OfertasBot:
@@ -119,16 +121,34 @@ class OfertasBot:
                 except Exception as e:
                     self.logger.error(f"No se pudieron configurar los comandos: {e}")
                 
-                # Usar polling con configuración robusta para errores de red
+                # Usar polling o webhooks según configuración
                 try:
-                    await self.application.updater.start_polling(
-                        drop_pending_updates=True,
-                        error_callback=self._telegram_error_callback,
-                        timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                        poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
-                    )
-                except Exception as polling_error:
-                    self.logger.error(f"Error al iniciar polling: {polling_error}", exc_info=True)
+                    if self.config.USE_WEBHOOKS and self.config.WEBHOOK_URL:
+                        self.logger.info(f"Iniciando en modo WEBHOOK en el puerto {self.config.PORT}")
+                        # El webhook URL path por defecto es el token
+                        webhook_path = f"/{self.config.TOKEN}"
+                        full_webhook_url = f"{self.config.WEBHOOK_URL.rstrip('/')}{webhook_path}"
+                        
+                        await self.application.bot.set_webhook(url=full_webhook_url)
+                        
+                        await self.application.updater.start_webhook(
+                            listen="0.0.0.0",
+                            port=self.config.PORT,
+                            url_path=webhook_path
+                        )
+                    else:
+                        self.logger.info("Iniciando en modo POLLING")
+                        # Por si acaso había un webhook configurado antes, lo borramos
+                        await self.application.bot.delete_webhook(drop_pending_updates=True)
+                        
+                        await self.application.updater.start_polling(
+                            drop_pending_updates=True,
+                            error_callback=self._telegram_error_callback,
+                            timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                            poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
+                        )
+                except Exception as net_startup_error:
+                    self.logger.error(f"Error al iniciar red de Telegram: {net_startup_error}", exc_info=True)
                     raise
 
                 while self.is_running:
@@ -259,6 +279,11 @@ class OfertasBot:
 
         sent_deals_count = 0
         for deal in deals_to_send:
+            # Generar gancho de IA si el API KEY está configurado
+            gancho = await generar_gancho_ia(deal.titulo, deal.precio, deal.precio_original)
+            if gancho:
+                deal.gancho_ia = gancho
+
             if await self.enviar_oferta_con_reintento(deal):
                 await self.db_manager.guardar_oferta(deal)
                 sent_deals_count += 1
@@ -398,29 +423,29 @@ class OfertasBot:
         return False
 
     def formatear_mensaje_oferta(self, oferta: Oferta) -> Dict[str, Any]:
-        emoji_tag = oferta.emoji
+        """Formatea el mensaje de la oferta y crea el teclado inline."""
         
-        # Usamos HTML para un formato más rico.
-        mensaje = f"{emoji_tag} <b>¡NUEVA OFERTA!</b> {emoji_tag}\n\n"
-        mensaje += f"🔥 <b>{oferta.titulo}</b>\n\n"
-        mensaje += f"💰 <b>Precio: {oferta.precio}</b>\n"
-
-        if oferta.precio_original and oferta.precio_original != oferta.precio:
-            mensaje += f"💸 Antes: <del>{oferta.precio_original}</del>\n"
-
-        if oferta.cupon:
-            mensaje += f"\n🎟️ <b>CUPÓN</b>: <code>{oferta.cupon}</code>\n"
-
+        texto = ""
+        if oferta.gancho_ia:
+            texto += f"<i>{oferta.gancho_ia}</i>\n\n"
+            
+        texto += f"{oferta.emoji} <b>{oferta.titulo}</b>\n\n"
+        texto += f"💰 <b>Precio:</b> {oferta.precio}\n"
+        if oferta.precio_original and oferta.precio_original != "No disponible":
+            texto += f"📉 <b>Antes:</b> <s>{oferta.precio_original}</s>\n"
         if oferta.info_cupon:
-            info_cupon_texto = oferta.info_cupon[:250]
-            mensaje += f"\nℹ️ <i>Info adicional: {info_cupon_texto}...</i>\n"
-
-        # Crear el botón inline
+            texto += f"🎟️ <b>Info Extra:</b> {oferta.info_cupon}\n"
+        if oferta.cupon:
+            texto += f"✂️ <b>Cupón:</b> <code>{oferta.cupon}</code>\n"
+        
+        texto += f"\n🔗 <a href='{oferta.link}'>Ir a la Oferta</a>\n"
+        texto += f"\n🏷️ {oferta.tag}"
+        
         keyboard = [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=oferta.link)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         return {
-            "text": mensaje,
+            "text": texto,
             "reply_markup": reply_markup,
             "parse_mode": 'HTML'
         }
