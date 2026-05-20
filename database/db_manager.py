@@ -78,11 +78,10 @@ class DBManager:
         return ofertas_eliminadas
 
     async def obtener_ids_recientes(self) -> set:
-        # Obtiene IDs de las últimas 48 horas para una verificación rápida en memoria
-        tiempo_limite = int(time.time()) - (2 * 24 * 60 * 60)
+        # Obtiene todos los IDs de la base de datos (ya está limitada a 30 días por la limpieza)
         async with aiosqlite.connect(self.database) as conn:
             cursor = await conn.cursor()
-            await cursor.execute("SELECT id FROM ofertas WHERE timestamp >= ?", (tiempo_limite,))
+            await cursor.execute("SELECT id FROM ofertas")
             return {row[0] for row in await cursor.fetchall()}
 
     async def obtener_todas_las_ofertas(self) -> List[Dict[str, Any]]:

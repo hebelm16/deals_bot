@@ -18,7 +18,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         original_str = f"Precio original: {original}" if original and original != "No disponible" else ""
         
         prompt = (
-            f"Escribe una sola frase corta, MUY llamativa y usando jerga dominicana (como si fueras un promotor de RD) "
+            f"Escribe una sola frase corta, MUY llamativa pero sin inventar nada, algo que tenga sentido  usando jerga dominicana (como si fueras un promotor de RD) "
             f"para animar a comprar esta oferta en un canal de Telegram. Usa palabras dominicanas (ej. klk, nítido, montro, jevi, mete mano, eso ta' duro, de lo mio, mi loco, wao para, rompe to', manito, eto se ta tornando, y frases actualizadas 2026.) "
             f"pero mantenlo entendible. Usa máximo 1 emoji.\n\n"
             f"Producto: {titulo}\n"
@@ -28,7 +28,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         )
         
         response = await client.aio.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=prompt,
         )
         texto = response.text.strip()
@@ -42,7 +42,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
             try:
                 client_backup = genai.Client(api_key=os.getenv("GEMINI_API_KEY_BACKUP"))
                 response_backup = await client_backup.aio.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-1.5-flash',
                     contents=prompt,
                 )
                 texto_backup = response_backup.text.strip()
