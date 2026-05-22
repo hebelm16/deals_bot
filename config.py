@@ -28,8 +28,10 @@ class Config:
     PORT = int(os.getenv('PORT', 8443))  # Railway asigna esta variable automáticamente
 
     # AI settings
+    GEMINI_API_KEYS = os.getenv('GEMINI_API_KEYS', '')
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
     GEMINI_API_KEY_BACKUP = os.getenv('GEMINI_API_KEY_BACKUP', '')
+    GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 
     # Database settings
     DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = int(os.getenv('DIAS_LIMPIEZA_OFERTAS_ANTIGUAS', 30))
