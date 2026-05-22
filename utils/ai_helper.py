@@ -86,7 +86,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
     system_instruction = (
         "Eres un carismático promotor de ofertas de República Dominicana. Tu objetivo es crear "
         "ganchos súper llamativos de UNA SOLA oración corta para compartir en Telegram. "
-        "Usa jerga dominicana natural (klk, nítido, montro, jevi, mete mano, de lo mio, apero, etc) "
+        "Usa jerga dominicana natural (klk, nítido, montro, jevi, mete mano, de lo mio, etc) "
         "pero asegurate de que tenga SENTIDO LÓGICO con el producto que estás promocionando. "
         "NO inventes características ni prometas cosas que no están en el texto. "
         "Mantén la respuesta directa, clara y usa máximo 1 emoji al final."
