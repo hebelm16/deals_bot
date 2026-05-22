@@ -32,6 +32,7 @@ class OfertasBot:
         self.lock = asyncio.Lock()
         self.lock_file = "ofertasbot.lock"
         self.browser = None
+        self.stop_event = asyncio.Event()
 
     def init_scrapers(self) -> Dict[str, Any]:
         scrapers = {}
@@ -92,7 +93,6 @@ class OfertasBot:
             with lock:
                 self.logger.info("Bloqueo adquirido exitosamente.")
                 await self.db_manager.init_db()
-                await self.launch_browser()  # Lanzar navegador
 
                 # Crear application con timeout robusto
                 self.application = (
@@ -150,22 +150,15 @@ class OfertasBot:
                     self.logger.error(f"Error al iniciar red de Telegram: {net_startup_error}", exc_info=True)
                     raise
 
-                while self.is_running:
-                    try:
-                        await self.check_ofertas()
-                    except (NetworkError, TimedOut) as net_error:
-                        # Errores de red temporales - registrar e intentar de nuevo
-                        self.logger.warning(
-                            f"Error de red temporal en el ciclo principal: {net_error}. Reintentando..."
-                        )
-                        await asyncio.sleep(5)  # Esperar 5 segundos antes de reintentar
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error en el ciclo principal: {e}", exc_info=True
-                        )
-                        await self.enviar_notificacion_error(e)
-                    finally:
-                        await asyncio.sleep(self.config.LOOP_INTERVAL_SECONDS)
+                self.logger.info("Añadiendo tarea de scraping a JobQueue.")
+                self.application.job_queue.run_repeating(
+                    self.scheduled_check_ofertas,
+                    interval=self.config.LOOP_INTERVAL_SECONDS,
+                    first=1
+                )
+
+                # Mantener vivo el programa hasta recibir señal de parada
+                await self.stop_event.wait()
 
                 await self.application.stop()
                 await self.application.shutdown()
@@ -196,6 +189,7 @@ class OfertasBot:
 
     async def stop(self) -> None:
         self.is_running = False
+        self.stop_event.set()
         if self.application:
             await self.application.stop()
             await self.application.shutdown()
@@ -290,11 +284,13 @@ class OfertasBot:
                 
                 # Enviar alertas a los usuarios suscritos
                 for sub in suscripciones:
-                    # Buscar coincidencia de palabra clave
+                    # Buscar coincidencia de palabra clave con regex para palabras completas
                     match = False
-                    if sub['keyword'].lower() in deal.titulo.lower():
+                    keyword_pattern = r'\b' + re.escape(sub['keyword'].lower()) + r'\b'
+                    
+                    if re.search(keyword_pattern, deal.titulo.lower()):
                         match = True
-                    elif deal.info_cupon and sub['keyword'].lower() in deal.info_cupon.lower():
+                    elif deal.info_cupon and re.search(keyword_pattern, deal.info_cupon.lower()):
                         match = True
                         
                     if match:
@@ -317,6 +313,7 @@ class OfertasBot:
                                     parse_mode="HTML"
                                 )
                             self.logger.info(f"Alerta enviada a {sub['chat_id']} por la palabra {sub['keyword']}")
+                            await asyncio.sleep(0.5)  # Prevenir rate limiting
                         except Exception as e:
                             self.logger.error(f"Error al enviar alerta a {sub['chat_id']}: {e}")
 
@@ -327,29 +324,42 @@ class OfertasBot:
         
         return sent_deals_count
 
+    async def scheduled_check_ofertas(self, context) -> None:
+        try:
+            await self.check_ofertas()
+        except (NetworkError, TimedOut) as net_error:
+            self.logger.warning(f"Error de red temporal en scraping: {net_error}")
+        except Exception as e:
+            self.logger.error(f"Error en el ciclo principal: {e}", exc_info=True)
+            await self.enviar_notificacion_error(e)
+
     async def check_ofertas(self) -> None:
         """
         Orquesta el proceso completo de buscar, filtrar, enviar y limpiar ofertas.
         """
         async with self.lock:
-            # 1. Scrape all sources
-            scraped_deals = await self._scrape_all_sources()
-            
-            # 2. Filter for new deals
-            new_deals = await self._filter_new_deals(scraped_deals)
-            
-            # 3. Process and send new deals
-            sent_count = await self._process_new_deals(new_deals)
-            
-            # 4. Clean up old deals from the database
-            cleaned_count = await self.db_manager.limpiar_ofertas_antiguas(
-                dias=self.config.DIAS_LIMPIEZA_OFERTAS_ANTIGUAS
-            )
-            
-            # 5. Log summary
-            self.logger.info("Resumen de ejecución:")
-            self.logger.info(f"  - Ofertas enviadas en esta ejecución: {sent_count}")
-            self.logger.info(f"  - Ofertas antiguas eliminadas: {cleaned_count}")
+            await self.launch_browser()
+            try:
+                # 1. Scrape all sources
+                scraped_deals = await self._scrape_all_sources()
+                
+                # 2. Filter for new deals
+                new_deals = await self._filter_new_deals(scraped_deals)
+                
+                # 3. Process and send new deals
+                sent_count = await self._process_new_deals(new_deals)
+                
+                # 4. Clean up old deals from the database
+                cleaned_count = await self.db_manager.limpiar_ofertas_antiguas(
+                    dias=self.config.DIAS_LIMPIEZA_OFERTAS_ANTIGUAS
+                )
+                
+                # 5. Log summary
+                self.logger.info("Resumen de ejecución:")
+                self.logger.info(f"  - Ofertas enviadas en esta ejecución: {sent_count}")
+                self.logger.info(f"  - Ofertas antiguas eliminadas: {cleaned_count}")
+            finally:
+                await self.close_browser()
 
     def seleccionar_ofertas_equilibradas(
         self, *listas_de_ofertas: List[List[Oferta]]

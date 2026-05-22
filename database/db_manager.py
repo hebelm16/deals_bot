@@ -36,14 +36,8 @@ class DBManager:
             await conn.commit()
 
     def generar_id_oferta(self, oferta: Oferta) -> str:
-        campos = [
-            oferta.titulo,
-            oferta.precio,
-            oferta.link,
-            oferta.imagen or '',
-            oferta.precio_original or ''
-        ]
-        contenido = '|'.join([str(campo) for campo in campos if campo])
+        # Usamos principalmente el link para evitar duplicados si el precio o imagen cambian
+        contenido = str(oferta.link)
         return hashlib.sha256(contenido.encode()).hexdigest()
 
 
