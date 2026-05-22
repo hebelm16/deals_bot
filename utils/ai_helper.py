@@ -38,7 +38,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
     for intento in range(max_retries):
         try:
             response = await client.aio.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-2.5-flash',
                 contents=prompt,
                 config=config
             )
@@ -57,7 +57,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
                     try:
                         client_backup = genai.Client(api_key=os.getenv("GEMINI_API_KEY_BACKUP"))
                         response_backup = await client_backup.aio.models.generate_content(
-                            model='gemini-1.5-flash',
+                            model='gemini-2.5-flash',
                             contents=prompt,
                             config=config
                         )
