@@ -64,7 +64,7 @@ async def fallback_groq(prompt: str, system_instruction: str) -> Optional[str]:
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt}
             ],
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             temperature=0.7,
             max_tokens=60
         )
@@ -110,7 +110,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         for intento in range(max_retries):
             try:
                 response = await client.aio.models.generate_content(
-                    model='gemini-1.5-flash-8b',  # Modelo más rápido y con mayor límite (1500 RPM gratis)
+                    model='gemini-2.5-flash',
                     contents=prompt,
                     config=config
                 )

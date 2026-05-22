@@ -46,7 +46,7 @@ class DealsnewsScraper(BaseScraper):
                 oferta = self.extraer_oferta(seccion)
                 if oferta:
                     ofertas.append(oferta)
-                    logging.info(f"DealNews: Oferta procesada: {oferta['titulo']}")
+                    logging.info(f"DealNews: Oferta procesada: {oferta.titulo}")
                 else:
                     logging.warning(f"DealNews: No se pudo extraer oferta de la sección {i+1}")
             except Exception as e:

@@ -79,7 +79,7 @@ class DealsOfAmericaScraper(BaseScraper):
                 oferta = self.extraer_oferta(seccion)
                 if oferta:
                     ofertas.append(oferta)
-                    logging.debug(f"DealsOfAmerica: Oferta procesada: {oferta['titulo']}")
+                    logging.debug(f"DealsOfAmerica: Oferta procesada: {oferta.titulo}")
             except Exception as e:
                 logging.error(f"DealsOfAmerica: Error al procesar una oferta: {e}", exc_info=True)
         
