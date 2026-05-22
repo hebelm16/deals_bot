@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import re
 from google import genai
 from google.genai import types
 from typing import Optional
@@ -33,7 +34,6 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         temperature=0.7,
     )
 
-    # Implementar hasta 3 intentos por si nos chocamos con el límite de cuota (Rate Limit)
     max_retries = 3
     for intento in range(max_retries):
         try:
@@ -43,7 +43,6 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
                 config=config
             )
             texto = response.text.strip()
-            # Limpiar si empieza con comillas
             if texto.startswith('"') and texto.endswith('"'):
                 texto = texto[1:-1]
             return texto
@@ -69,8 +68,14 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
                         logger.warning(f"La llave de respaldo también falló: {e_backup}")
                         return None
                 elif intento < max_retries - 1:
-                    wait_time = (intento + 1) * 3
-                    logger.warning(f"Error de cuota (429). Reintentando en {wait_time} segundos...")
+                    # Extraer el tiempo de espera exacto que pide Google (ej: retry in 58.29s)
+                    match = re.search(r'retry in (\d+(?:\.\d+)?)s', error_msg)
+                    if match:
+                        wait_time = int(float(match.group(1))) + 2  # Añadimos 2s de margen
+                    else:
+                        wait_time = 60  # Por defecto esperamos 1 minuto si no dice cuánto
+                        
+                    logger.warning(f"Error de cuota (429). Google pide esperar. Pausando el bot por {wait_time} segundos...")
                     await asyncio.sleep(wait_time)
                 else:
                     logger.warning("Límite de cuota gratuita alcanzado. Publicando sin gancho...")
