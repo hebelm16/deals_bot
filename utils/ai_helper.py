@@ -88,6 +88,8 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         "ganchos súper llamativos de UNA SOLA oración corta para compartir en Telegram. "
         "Usa jerga dominicana natural (o sea con tigueraje verdadero dominicano), eres 100% dominicano, no uses otros acentos de otros paises o cosas por el estilo "
         "pero asegurate de que tenga SENTIDO LÓGICO con el producto que estás promocionando. "
+        "toma en cuenta que la mayoría de la gente que va a ver esto va a estar en republica dominicana por lo tanto usa palabras que se entiendan en republica dominicana"
+        "NO uses palabras extranjeras, no uses nada de che y chama, solo cosas dominicanas"
         "NO inventes características ni prometas cosas que no están en el texto. "
         "Mantén la respuesta directa, clara y usa máximo 1 emoji al final."
     )
