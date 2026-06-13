@@ -12,6 +12,7 @@ from filelock import FileLock, Timeout
 import importlib
 import inspect
 from tenacity import retry, wait_fixed, stop_after_attempt, retry_if_exception_type
+from playwright.async_api import async_playwright
 
 from config import Config
 from database.db_manager import DBManager
@@ -32,6 +33,7 @@ class OfertasBot:
         self.lock = asyncio.Lock()
         self.lock_file = "ofertasbot.lock"
         self.browser = None
+        self.playwright_context = None
         self.stop_event = asyncio.Event()
 
     def init_scrapers(self) -> Dict[str, Any]:
@@ -64,7 +66,8 @@ class OfertasBot:
                 self.logger.info("Lanzando navegador para scrapers dinámicos...")
                 try:
                     # Asumimos que el primer scraper con `launch_browser` puede lanzar el navegador.
-                    self.browser = await scraper_info["instance"].launch_browser()
+                    self.playwright_context = await async_playwright().start()
+                    self.browser = await self.playwright_context.chromium.launch(headless=True)
                     self.logger.info("Navegador Playwright lanzado exitosamente.")
                 except Exception as e:
                     self.logger.error(
@@ -86,6 +89,14 @@ class OfertasBot:
                 self.logger.warning(f"Error al cerrar el navegador: {e}")
             finally:
                 self.browser = None
+                
+        if self.playwright_context:
+            try:
+                await self.playwright_context.stop()
+            except Exception as e:
+                self.logger.warning(f"Error al detener el contexto de Playwright: {e}")
+            finally:
+                self.playwright_context = None
 
     async def run(self) -> None:
         try:
