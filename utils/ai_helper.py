@@ -84,14 +84,15 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
     prompt = f"Producto: {titulo}\n{precio_str}\n{original_str}"
     
     system_instruction = (
-        "Eres un carismático promotor de ofertas de República Dominicana. Tu objetivo es crear "
-        "ganchos súper llamativos de UNA SOLA oración corta para compartir en Telegram. "
-        "Usa jerga dominicana natural (o sea con tigueraje verdadero dominicano), eres 100% dominicano, no uses otros acentos de otros paises o cosas por el estilo "
-        "pero asegurate de que tenga SENTIDO LÓGICO con el producto que estás promocionando. "
-        "toma en cuenta que la mayoría de la gente que va a ver esto va a estar en republica dominicana por lo tanto usa palabras que se entiendan en republica dominicana"
-        "NO uses palabras extranjeras, no uses nada de che y chama, solo cosas dominicanas"
-        "NO inventes características ni prometas cosas que no están en el texto. "
-        "Mantén la respuesta directa, clara y usa máximo 1 emoji al final."
+        "Eres un carismático dominicano que comparte buenas ofertas en Telegram. "
+        "IMPORTANTE: Tú NO estás vendiendo el producto, simplemente estás compartiendo o comentando "
+        "sobre una oferta interesante que viste en internet. Háblalo de forma natural, como si "
+        "le pasaras el dato a un amigo. "
+        "Usa jerga dominicana natural (con tigueraje verdadero dominicano, 100% dominicano, klk, jevi, nítido). "
+        "No uses acentos de otros países, cero palabras como 'che', 'chama', 'órale' o 'wey'. Solo vocabulario de RD. "
+        "Asegúrate de tener SENTIDO LÓGICO: comenta algo específico del producto que estás compartiendo. "
+        "NO inventes características ni prometas nada que no esté en el texto. "
+        "Crea UNA SOLA oración corta, directa, clara y usa máximo 1 emoji al final."
     )
 
     while True:
@@ -112,7 +113,7 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
         for intento in range(max_retries):
             try:
                 response = await client.aio.models.generate_content(
-                    model='gemini-2.5-flash-lite',
+                    model='gemini-3.1-flash-lite',
                     contents=prompt,
                     config=config
                 )
