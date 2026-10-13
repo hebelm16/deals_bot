@@ -296,21 +296,27 @@ class OfertasBot:
 
         sent_deals_count = 0
         for deal in deals_to_send:
-            # Generar gancho de IA con timeout si el API KEY está configurado
+            # Generar gancho de IA con paciencia (timeout de 75s para permitir reintentos/rotación)
+            gancho = None
             try:
                 gancho = await asyncio.wait_for(
                     generar_gancho_ia(deal.titulo, deal.precio, deal.precio_original),
-                    timeout=15.0
+                    timeout=75.0
                 )
             except asyncio.TimeoutError:
-                self.logger.warning(f"Timeout al generar gancho IA para '{deal.titulo}'. Se enviará sin gancho.")
-                gancho = None
+                self.logger.warning(f"Timeout al generar gancho IA para '{deal.titulo}'.")
             except Exception as e:
                 self.logger.warning(f"Error al generar gancho IA: {e}")
-                gancho = None
 
-            if gancho:
-                deal.gancho_ia = gancho
+            # REGLA ESTRICTA: Solo publicar si tiene gancho de IA generado
+            if not gancho:
+                self.logger.warning(
+                    f"Oferta omitida: '{deal.titulo}'. No se generó gancho IA. "
+                    "Se reintentará en el próximo ciclo para asegurar que todas las ofertas salgan con gancho."
+                )
+                continue
+
+            deal.gancho_ia = gancho
 
             if await self.enviar_oferta_con_reintento(deal):
                 await self.db_manager.guardar_oferta(deal)
@@ -355,7 +361,8 @@ class OfertasBot:
             else:
                 self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {deal.titulo}")
             
-            await asyncio.sleep(self.config.SEND_OFFER_INTERVAL_SECONDS)
+            # Pausa para proteger cuotas de rate-limit de Telegram y de la IA
+            await asyncio.sleep(max(self.config.SEND_OFFER_INTERVAL_SECONDS, 8))
         
         return sent_deals_count
 
