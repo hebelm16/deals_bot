@@ -67,7 +67,10 @@ class OfertasBot:
                 try:
                     # Asumimos que el primer scraper con `launch_browser` puede lanzar el navegador.
                     self.playwright_context = await async_playwright().start()
-                    self.browser = await self.playwright_context.chromium.launch(headless=True)
+                    self.browser = await self.playwright_context.chromium.launch(
+                        headless=True,
+                        args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                    )
                     self.logger.info("Navegador Playwright lanzado exitosamente.")
                 except Exception as e:
                     self.logger.error(
@@ -223,15 +226,26 @@ class OfertasBot:
                     self.logger.error(f"El scraper {scraper.name} necesita un navegador, pero no hay uno activo.")
                     continue
                 if is_async:
-                    tasks.append(method(self.browser))
+                    coro = method(self.browser)
                 else:
-                    # No es ideal ejecutar una tarea de navegador en un hilo síncrono, pero se maneja
-                    tasks.append(asyncio.to_thread(method, self.browser))
+                    coro = asyncio.to_thread(method, self.browser)
             else:
                 if is_async:
-                    tasks.append(method())
+                    coro = method()
                 else:
-                    tasks.append(asyncio.to_thread(method))
+                    coro = asyncio.to_thread(method)
+            
+            async def run_with_timeout(s_name, c):
+                try:
+                    return await asyncio.wait_for(c, timeout=60.0)
+                except asyncio.TimeoutError:
+                    self.logger.error(f"Scraper '{s_name}' excedió el tiempo límite de 60s y fue cancelado.")
+                    return []
+                except Exception as e:
+                    self.logger.error(f"Error al ejecutar scraper '{s_name}': {e}", exc_info=True)
+                    return []
+
+            tasks.append(run_with_timeout(scraper.name, coro))
         
         if not tasks:
             self.logger.warning("No hay tareas de scraping para ejecutar.")
@@ -241,11 +255,10 @@ class OfertasBot:
         self.logger.info("Scraping concurrente finalizado.")
 
         for i, result in enumerate(results):
-            # Es necesario un mapeo más robusto si las tareas no se mantienen en orden
             scraper = enabled_scrapers[i]
             if isinstance(result, Exception):
                 self.logger.error(f"Error al obtener ofertas de {scraper.name}: {result}", exc_info=result)
-            else:
+            elif isinstance(result, list):
                 self.logger.info(f"Se obtuvieron {len(result)} ofertas de {scraper.name}")
                 scraped_deals[scraper.name] = result
         
@@ -283,8 +296,19 @@ class OfertasBot:
 
         sent_deals_count = 0
         for deal in deals_to_send:
-            # Generar gancho de IA si el API KEY está configurado
-            gancho = await generar_gancho_ia(deal.titulo, deal.precio, deal.precio_original)
+            # Generar gancho de IA con timeout si el API KEY está configurado
+            try:
+                gancho = await asyncio.wait_for(
+                    generar_gancho_ia(deal.titulo, deal.precio, deal.precio_original),
+                    timeout=15.0
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Timeout al generar gancho IA para '{deal.titulo}'. Se enviará sin gancho.")
+                gancho = None
+            except Exception as e:
+                self.logger.warning(f"Error al generar gancho IA: {e}")
+                gancho = None
+
             if gancho:
                 deal.gancho_ia = gancho
 
@@ -337,7 +361,10 @@ class OfertasBot:
 
     async def scheduled_check_ofertas(self, context) -> None:
         try:
-            await self.check_ofertas()
+            # Timeout de seguridad global para toda la ejecución del ciclo (10 minutos máx)
+            await asyncio.wait_for(self.check_ofertas(), timeout=600.0)
+        except asyncio.TimeoutError:
+            self.logger.error("El ciclo programado de check_ofertas excedió el tiempo límite de 10 minutos.")
         except (NetworkError, TimedOut) as net_error:
             self.logger.warning(f"Error de red temporal en scraping: {net_error}")
         except Exception as e:

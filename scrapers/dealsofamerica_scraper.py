@@ -1,10 +1,9 @@
 import logging
 from bs4 import BeautifulSoup
-from typing import List, Dict, Any, Optional
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-import asyncio
-import time
-import hashlib
+import httpx
+from typing import List, Optional
+from tenacity import retry, stop_after_attempt, wait_fixed
+import random
 import re
 
 from .base_scraper import BaseScraper
@@ -16,64 +15,40 @@ class DealsOfAmericaScraper(BaseScraper):
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
-    async def launch_browser(self):
-        logging.info("DealsOfAmerica: Lanzando un nuevo navegador Playwright...")
-        try:
-            p = await async_playwright().start()
-            browser = await p.chromium.launch(headless=True)
-            return browser
-        except Exception as e:
-            logging.error(f"DealsOfAmerica: Error al lanzar Playwright: {e}", exc_info=True)
-            raise
-
-    async def obtener_ofertas(self, browser) -> List[Oferta]:
-        logging.info(f"DealsOfAmerica: Iniciando scraping con Playwright desde {self.url}")
-        ofertas = []
-        page = None
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+    async def obtener_ofertas(self) -> List[Oferta]:
+        logging.info(f"DealsOfAmerica: Iniciando scraping desde {self.url}")
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0'
+        ]
+        headers = {
+            'User-Agent': random.choice(user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
         
         try:
-            page = await browser.new_page()
-            
-            # Aumentar el tiempo de espera para la navegación
-            await page.goto(self.url, timeout=90000, wait_until='domcontentloaded')
-
-            # Intentar aceptar el banner de cookies si aparece
-            try:
-                logging.info("DealsOfAmerica: Buscando banner de cookies...")
-                # Usar una espera más flexible para el botón
-                accept_button = page.locator('#onetrust-accept-btn-handler')
-                await accept_button.wait_for(timeout=7000)
-                await accept_button.click()
-                logging.info("DealsOfAmerica: Banner de cookies aceptado.")
-                # Esperar un poco para que la acción se procese
-                await page.wait_for_timeout(2000)
-            except PlaywrightTimeoutError:
-                logging.info("DealsOfAmerica: No se encontró el banner de cookies o ya estaba aceptado.")
-            
-            # Esperar a que los contenedores de las ofertas estén presentes
-            await page.wait_for_selector('section.deal.row', timeout=45000)
-            
-            content = await page.content()
-            
-        except PlaywrightTimeoutError as e:
-            logging.error(f"DealsOfAmerica: Timeout con Playwright: {e}")
-            if page:
-                # Guardar captura de pantalla para depuración en caso de timeout
-                screenshot_path = "debug_dealsofamerica.png"
-                await page.screenshot(path=screenshot_path)
-                logging.info(f"DealsOfAmerica: Captura de pantalla guardada en {screenshot_path}")
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                response = await client.get(self.url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            logging.info(f"DealsOfAmerica: Respuesta obtenida. Código de estado: {response.status_code}")
+        except httpx.RequestError as e:
+            logging.error(f"DealsOfAmerica: Error de red al obtener la página: {e}")
+            return []
+        except httpx.HTTPStatusError as e:
+            logging.error(f"DealsOfAmerica: Error HTTP {e.response.status_code}: {e}")
             return []
         except Exception as e:
-            logging.error(f"DealsOfAmerica: Error durante la navegación con Playwright: {e}")
+            logging.error(f"DealsOfAmerica: Error inesperado al hacer petición: {e}")
             return []
-        finally:
-            if page:
-                await page.close()
 
-        soup = BeautifulSoup(content, 'html.parser')
+        soup = BeautifulSoup(response.text, 'html.parser')
         secciones_oferta = soup.find_all('section', class_='deal row')
-        logging.info(f"DealsOfAmerica: Se encontraron {len(secciones_oferta)} secciones de oferta tras renderizado.")
+        logging.info(f"DealsOfAmerica: Se encontraron {len(secciones_oferta)} secciones de oferta.")
         
+        ofertas = []
         for seccion in secciones_oferta:
             try:
                 oferta = self.extraer_oferta(seccion)
@@ -84,7 +59,7 @@ class DealsOfAmericaScraper(BaseScraper):
                 logging.error(f"DealsOfAmerica: Error al procesar una oferta: {e}", exc_info=True)
         
         if not ofertas:
-            logging.warning(f"DealsOfAmerica: No se encontraron ofertas en {self.url} después de usar Playwright.")
+            logging.warning(f"DealsOfAmerica: No se encontraron ofertas en {self.url}.")
         else:
             logging.info(f"DealsOfAmerica: Se encontraron {len(ofertas)} ofertas en total.")
         
@@ -122,8 +97,6 @@ class DealsOfAmericaScraper(BaseScraper):
 
             # Intentar extraer el código del cupón de forma más específica
             if info_cupon:
-                # Patrón para buscar "w/Coupon CODIGO", "coupon CODIGO", "code CODIGO", etc.
-                # El código suele ser alfanumérico y de 4+ caracteres.
                 match = re.search(r'(?:w/coupon|coupon|code)\s+([A-Z0-9]{4,})', info_cupon, re.IGNORECASE)
                 if match:
                     cupon = match.group(1)
