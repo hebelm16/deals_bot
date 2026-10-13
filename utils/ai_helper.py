@@ -119,9 +119,9 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
     )
 
     models_to_try = [
-        os.getenv('GEMINI_MODEL', 'gemini-2.5-flash'),
-        'gemini-2.0-flash',
-        'gemini-1.5-flash'
+        os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
+        'gemini-2.5-flash',
+        'gemini-2.0-flash'
     ]
     # Eliminar duplicados manteniendo orden
     gemini_models = []
