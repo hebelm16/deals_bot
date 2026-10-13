@@ -82,12 +82,16 @@ async def fallback_groq(prompt: str, system_instruction: str) -> Optional[str]:
             ],
             model="llama-3.3-70b-versatile",
             temperature=0.7,
-            max_tokens=60
+            max_tokens=250
         )
         texto = response.choices[0].message.content.strip()
         if texto.startswith('"') and texto.endswith('"'):
             texto = texto[1:-1]
-        return texto
+        
+        # Validar que no esté truncado
+        if len(texto) >= 15:
+            return texto
+        return None
     except Exception as e:
         logger.error(f"Error usando Groq: {e}")
         return None
@@ -157,11 +161,20 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
 
         # Intentar con la llave seleccionada
         client = genai.Client(api_key=key)
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=0.7,
-            max_output_tokens=80
-        )
+        
+        # Configuración con thinking desactivado (budget=0) y suficientes tokens para que no se trunque
+        config_params = {
+            "system_instruction": system_instruction,
+            "temperature": 0.7,
+            "max_output_tokens": 350,
+        }
+        try:
+            # Desactivar thinking en Gemini 2.5 para que no consuma los tokens de salida en razonamiento
+            config_params["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
+
+        config = types.GenerateContentConfig(**config_params)
 
         for model_name in gemini_models:
             try:
@@ -174,7 +187,12 @@ async def generar_gancho_ia(titulo: str, precio: str, original: str) -> Optional
                 if texto:
                     if texto.startswith('"') and texto.endswith('"'):
                         texto = texto[1:-1]
-                    return texto
+                    
+                    # Validar que no sea un texto incompleto o demasiado corto
+                    if len(texto) >= 15:
+                        return texto
+                    else:
+                        logger.warning(f"Gancho generado demasiado corto ('{texto}'), probando siguiente intento...")
 
             except Exception as e:
                 error_msg = str(e)

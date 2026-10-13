@@ -19,6 +19,7 @@ from database.db_manager import DBManager
 from bot.handlers import setup_handlers
 from utils.models import Oferta
 from utils.ai_helper import generar_gancho_ia
+import html
 import re
 
 class OfertasBot:
@@ -481,7 +482,8 @@ class OfertasBot:
         
         texto = ""
         if oferta.gancho_ia:
-            texto += f"<i>{oferta.gancho_ia}</i>\n\n"
+            gancho_seguro = html.escape(oferta.gancho_ia)
+            texto += f"<i>{gancho_seguro}</i>\n\n"
             
         texto += f"{oferta.emoji} <b>{oferta.titulo}</b>\n\n"
         texto += f"💰 <b>Precio:</b> {oferta.precio}\n"
