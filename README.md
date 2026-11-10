@@ -8,8 +8,11 @@ a los usuarios suscritos a palabras clave.
 
 - Rastrea Slickdeals (feed RSS), DealNews y DealsOfAmerica cada 2 horas.
 - Deduplica por enlace canónico y por hash, incluyendo ofertas históricas.
-- Genera un gancho con Gemini (rotación de claves) y respaldo en Groq; si no hay
-  IA, publica con una plantilla para no bloquear el canal.
+- Puntúa las ofertas por descuento real, calidad de los datos y frescura, y
+  elige las mejores manteniendo variedad entre fuentes.
+- Genera un gancho con Gemini (rotación de claves y descubrimiento automático de
+  modelos disponibles) y respaldo en Groq; si no hay IA, publica con una
+  plantilla para no bloquear el canal.
 - Publica con imagen y botón; si Telegram no puede descargar la imagen, el bot
   baja el fichero (o un candidato de la página) y lo sube directamente. Si no
   hay ninguna imagen disponible, usa `assets/oferta_sin_imagen.jpg` para que
@@ -130,9 +133,9 @@ auditoría de dependencias en cada push y pull request.
 
 - **Todas las ofertas con el mismo texto** (“De X a Y. Buen momento…”): la IA no
   está devolviendo gancho y se está usando la plantilla. Ejecuta `/test_ia` y
-  `/diagnostico`: muestran el proveedor, el modelo y el error exacto. Revisa que
-  las variables de Railway se llamen `GEMINI_API_KEYS`/`GEMINI_API_KEY` y
-  `GROQ_API_KEY`, y que los modelos configurados existan para tu clave.
+  `/diagnostico`: muestran el proveedor, el modelo, los modelos descubiertos y
+  el error exacto. El bot consulta a la API qué modelos Gemini puede usar tu
+  clave; si ninguno responde, usa Groq.
 - **Ofertas sin foto**: el bot intenta la URL, luego descarga el archivo o un
   candidato de la página (`og:image`, JSON-LD, `<img>`). Si no encuentra nada,
   usa la imagen de respaldo; revisa `/diagnostico` para ver el contador de

@@ -8,6 +8,8 @@ import re
 import time
 from typing import Optional
 
+import httpx
+
 from config import Config
 
 try:
@@ -42,6 +44,104 @@ _estado: dict[str, object] = {
     "exitos": 0,
     "fallos": 0,
 }
+
+# Modelos que la clave puede usar de verdad, descubiertos vía API.
+_modelos_descubiertos: list[str] = []
+_modelos_cache_ts = 0.0
+_modelos_intento_ts = 0.0
+_MODELOS_TTL = 6 * 3600
+_MODELOS_ERROR_TTL = 3600
+
+
+def _version_modelo(nombre: str) -> float:
+    match = re.search(r"gemini-(\d+(?:\.\d+)?)", nombre)
+    return float(match.group(1)) if match else 0.0
+
+
+def modelos_gemini_descubiertos() -> list[str]:
+    return list(_modelos_descubiertos)
+
+
+async def descubrir_modelos_gemini(keys: list[str]) -> list[str]:
+    """
+    Pregunta a la API qué modelos Gemini puede usar la clave.
+
+    Evita depender de nombres hardcodeados que Google retira para cuentas nuevas.
+    """
+    global _modelos_descubiertos, _modelos_cache_ts, _modelos_intento_ts
+
+    ahora = time.time()
+    if _modelos_descubiertos and ahora - _modelos_cache_ts < _MODELOS_TTL:
+        return list(_modelos_descubiertos)
+    if ahora - _modelos_intento_ts < _MODELOS_ERROR_TTL:
+        return list(_modelos_descubiertos)
+    _modelos_intento_ts = ahora
+    if not keys:
+        return []
+
+    for key in keys[:3]:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                respuesta = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    headers={"x-goog-api-key": key},
+                )
+            if respuesta.status_code != 200:
+                logger.warning(
+                    "No se pudieron listar los modelos Gemini (HTTP %s)",
+                    respuesta.status_code,
+                )
+                continue
+            datos = respuesta.json()
+            nombres: list[str] = []
+            for modelo in datos.get("models", []):
+                nombre = str(modelo.get("name", "")).removeprefix("models/")
+                metodos = modelo.get("supportedGenerationMethods") or []
+                if "generateContent" not in metodos:
+                    continue
+                bajo = nombre.lower()
+                if not bajo.startswith("gemini"):
+                    continue
+                if any(
+                    parte in bajo
+                    for parte in (
+                        "embedding",
+                        "image",
+                        "tts",
+                        "audio",
+                        "live",
+                        "robotics",
+                        "veo",
+                        "lyria",
+                    )
+                ):
+                    continue
+                nombres.append(nombre)
+            if not nombres:
+                continue
+            nombres.sort(
+                key=lambda nombre: (
+                    0
+                    if "flash" in nombre.lower() and "lite" not in nombre.lower()
+                    else 1
+                    if "flash" in nombre.lower()
+                    else 2,
+                    1
+                    if ("preview" in nombre.lower() or "exp" in nombre.lower())
+                    else 0,
+                    -_version_modelo(nombre),
+                )
+            )
+            _modelos_descubiertos = nombres[:15]
+            _modelos_cache_ts = time.time()
+            logger.info(
+                "Modelos Gemini disponibles para la clave: %s",
+                ", ".join(_modelos_descubiertos[:8]),
+            )
+            return list(_modelos_descubiertos)
+        except (httpx.HTTPError, ValueError, OSError) as exc:
+            logger.warning("Error consultando los modelos Gemini: %s", exc)
+    return []
 
 
 def estado_ia() -> dict[str, object]:
@@ -289,7 +389,11 @@ async def generar_gancho_ia(
             _registrar_fallo("config", "sin claves de Gemini utilizables")
         return resultado
 
-    modelos = Config.gemini_models()
+    descubiertos = await descubrir_modelos_gemini(keys)
+    modelos: list[str] = []
+    for nombre in [*descubiertos, *Config.gemini_models()]:
+        if nombre and nombre not in modelos:
+            modelos.append(nombre)
     for _ in range(3):
         key, wait_time = get_next_available_key(keys)
         if not key:

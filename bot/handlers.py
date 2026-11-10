@@ -9,7 +9,11 @@ from functools import wraps
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
-from utils.ai_helper import estado_ia, generar_gancho_ia
+from utils.ai_helper import (
+    estado_ia,
+    generar_gancho_ia,
+    modelos_gemini_descubiertos,
+)
 from utils.keywords import normalizar_keyword
 
 
@@ -138,6 +142,13 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     ]
     for nombre, info in bot.scrapers.items():
         lineas.append(f"• {html.escape(nombre)}: {'on' if info['enabled'] else 'off'}")
+    descubiertos = modelos_gemini_descubiertos()
+    if descubiertos:
+        lineas.append("")
+        lineas.append(
+            "Modelos Gemini descubiertos: "
+            f"<code>{html.escape(', '.join(descubiertos[:8]))}</code>"
+        )
     if ultimo_ok:
         lineas.append("")
         lineas.append(

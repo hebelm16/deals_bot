@@ -6,6 +6,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from utils.models import Oferta
+from utils.scoring import calcular_descuento
 
 CAPTION_LIMIT = 1024
 MESSAGE_LIMIT = 4096
@@ -80,7 +81,11 @@ def render_offer_text(
             "no disponible",
             "none",
         ):
-            lineas.append(f"📉 <b>Antes:</b> <s>{_esc(_corta(original, 60))}</s>")
+            descuento = calcular_descuento(precio, original)
+            sufijo = f" <b>(-{descuento:.0f}%)</b>" if descuento else ""
+            lineas.append(
+                f"📉 <b>Antes:</b> <s>{_esc(_corta(original, 60))}</s>{sufijo}"
+            )
         if con_info and info:
             lineas.append(f"🎟️ <b>Info Extra:</b> {_esc(_corta(info, info_max))}")
         if cupon:

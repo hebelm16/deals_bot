@@ -7,7 +7,6 @@ import importlib
 import inspect
 import logging
 import os
-import random
 import signal
 import time
 from io import BytesIO
@@ -40,6 +39,7 @@ from utils.health_server import start_health_server
 from utils.images import ImagenDescargada, resolver_imagen
 from utils.keywords import compilar_patron
 from utils.models import Oferta
+from utils.scoring import seleccionar_mejores
 
 logger = logging.getLogger("OfertasBot")
 
@@ -353,38 +353,23 @@ class OfertasBot:
         }
 
     # ------------------------------------------------------------------ publicación
+    def _seleccionar_ofertas(
+        self, ofertas_por_fuente: Dict[str, List[Oferta]]
+    ) -> List[Oferta]:
+        return seleccionar_mejores(
+            ofertas_por_fuente, self.config.MAX_OFERTAS_POR_EJECUCION
+        )
+
     def seleccionar_ofertas_equilibradas(
         self, *listas_de_ofertas: List[List[Oferta]]
     ) -> List[Oferta]:
-        listas_no_vacias = [lista for lista in listas_de_ofertas if lista]
-        if not listas_no_vacias:
-            return []
-
-        max_ofertas = self.config.MAX_OFERTAS_POR_EJECUCION
-        iteradores = [iter(lista) for lista in listas_no_vacias]
-        seleccionadas: List[Oferta] = []
-        vistos: set[tuple[str, str]] = set()
-
-        while len(seleccionadas) < max_ofertas:
-            agregadas = 0
-            for iterador in iteradores:
-                try:
-                    oferta = next(iterador)
-                except StopIteration:
-                    continue
-                clave = (oferta.titulo or "", oferta.link or "")
-                if clave in vistos:
-                    continue
-                vistos.add(clave)
-                seleccionadas.append(oferta)
-                agregadas += 1
-                if len(seleccionadas) == max_ofertas:
-                    break
-            if agregadas == 0:
-                break
-
-        random.shuffle(seleccionadas)
-        return seleccionadas
+        """Compatibilidad: reparte las listas por fuentes sintéticas."""
+        por_fuente = {
+            f"fuente{indice}": lista
+            for indice, lista in enumerate(listas_de_ofertas)
+            if lista
+        }
+        return self._seleccionar_ofertas(por_fuente)
 
     async def _generar_gancho(self, oferta: Oferta) -> Optional[str]:
         try:
@@ -423,9 +408,7 @@ class OfertasBot:
         new_deals_by_source: Dict[str, List[Oferta]],
         deadline: Optional[float] = None,
     ) -> int:
-        seleccionadas = self.seleccionar_ofertas_equilibradas(
-            *[ofertas for ofertas in new_deals_by_source.values()]
-        )
+        seleccionadas = self._seleccionar_ofertas(new_deals_by_source)
         logger.info("Ofertas seleccionadas para publicar: %s", len(seleccionadas))
         if not seleccionadas:
             return 0
