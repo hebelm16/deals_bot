@@ -26,6 +26,9 @@ HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
 }
 
+# FeedBurner a veces devuelve una página HTML; este segundo feed sirve de respaldo.
+FEEDS_ALTERNATIVOS = ("https://feeds.feedburner.com/slickdeals",)
+
 
 class SlickdealsScraper(BaseScraper):
     emoji = "🔥"
@@ -39,29 +42,43 @@ class SlickdealsScraper(BaseScraper):
         reraise=True,
     )
     async def obtener_ofertas(self) -> list[Oferta]:
-        logger.info("Slickdeals: descargando feed %s", self.url)
+        urls = [self.url]
+        for alternativo in FEEDS_ALTERNATIVOS:
+            if alternativo not in urls:
+                urls.append(alternativo)
+
+        errores: list[str] = []
+        for url in urls:
+            try:
+                logger.info("Slickdeals: descargando feed %s", url)
+                response = await self._descargar(url)
+                tipo = response.headers.get("content-type", "")
+                ofertas = self.parsear_feed(response.content)
+                if ofertas:
+                    logger.info(
+                        "Slickdeals: %s ofertas desde %s (%s)",
+                        len(ofertas),
+                        url,
+                        tipo or "sin tipo",
+                    )
+                    return ofertas
+                errores.append(f"{url}: 0 ofertas")
+            except ScraperError as exc:
+                errores.append(f"{url}: {exc}")
+                logger.warning("Slickdeals: fallo con %s: %s", url, exc)
+
+        raise ScraperError("Slickdeals: ningún feed devolvió ofertas (" + "; ".join(errores) + ")")
+
+    async def _descargar(self, url: str) -> httpx.Response:
         try:
             async with httpx.AsyncClient(
                 headers=HEADERS, follow_redirects=True, timeout=30
             ) as client:
-                response = await client.get(self.url)
+                response = await client.get(url)
             response.raise_for_status()
+            return response
         except httpx.HTTPError as exc:
             raise ScraperError(f"Slickdeals no respondió correctamente: {exc}") from exc
-
-        tipo = response.headers.get("content-type", "").lower()
-        inicio = response.content[:500].lower()
-        if "xml" not in tipo and b"<rss" not in inicio and b"<feed" not in inicio:
-            raise ScraperError(
-                f"Slickdeals devolvió contenido que no es RSS ({tipo or 'sin tipo'})"
-            )
-
-        ofertas = self.parsear_feed(response.content)
-        if not ofertas:
-            logger.warning("Slickdeals: el feed no devolvió ofertas utilizables")
-        else:
-            logger.info("Slickdeals: %s ofertas desde el feed RSS", len(ofertas))
-        return ofertas
 
     def parsear_feed(self, contenido: bytes | str) -> list[Oferta]:
         raiz = None

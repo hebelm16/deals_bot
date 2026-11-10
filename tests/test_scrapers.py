@@ -1,4 +1,6 @@
+import httpx
 import pytest
+import respx
 from bs4 import BeautifulSoup
 
 from scrapers.base_scraper import ScraperError
@@ -67,6 +69,28 @@ def test_slickdeals_rechaza_pagina_html():
     )
     with pytest.raises(ScraperError):
         scraper.parsear_feed("<html><body>Just a moment...</body></html>")
+
+
+@respx.mock
+async def test_slickdeals_usa_feed_alternativo_si_el_principal_es_html(
+    mock_slickdeals_rss,
+):
+    scraper = SlickdealsScraper(
+        name="slickdeals", url="https://feeds.feedburner.com/SlickdealsnetFP", tag="#Slickdeals"
+    )
+    respx.get("https://feeds.feedburner.com/SlickdealsnetFP").mock(
+        return_value=httpx.Response(
+            200, text="<html><body>Error</body></html>", headers={"content-type": "text/html"}
+        )
+    )
+    respx.get("https://feeds.feedburner.com/slickdeals").mock(
+        return_value=httpx.Response(
+            200, text=mock_slickdeals_rss, headers={"content-type": "text/xml"}
+        )
+    )
+
+    ofertas = await scraper.obtener_ofertas()
+    assert len(ofertas) == 2
 
 
 def test_dealnews_extractor(mock_dealnews_html):

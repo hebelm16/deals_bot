@@ -135,7 +135,7 @@ auditoría de dependencias en cada push y pull request.
   está devolviendo gancho y se está usando la plantilla. Ejecuta `/test_ia` y
   `/diagnostico`: muestran el proveedor, el modelo, los modelos descubiertos y
   el error exacto. El bot consulta a la API qué modelos Gemini puede usar tu
-  clave y usa `gemini-3-flash-preview` como principal; si no está disponible,
+  clave y usa `gemini-3.6-flash` como principal; si no está disponible,
   prueba los modelos descubiertos y luego Groq. Puedes cambiar el principal con
   `GEMINI_MODEL_PREFERIDOS`.
 - **Ofertas sin foto**: el bot intenta la URL, luego descarga el archivo o un
