@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from utils.models import Oferta
 from utils.scoring import calcular_descuento
+from utils.text import limpiar_titulo, resumen_info
 
 CAPTION_LIMIT = 1024
 MESSAGE_LIMIT = 4096
@@ -52,10 +53,10 @@ def render_offer_text(
     recorta primero el título, después la información extra y por último el
     gancho, de modo que el HTML siga siendo válido.
     """
-    titulo = oferta.titulo or "Oferta"
+    titulo = limpiar_titulo(oferta.titulo) or oferta.titulo or "Oferta"
     precio = oferta.precio or "No disponible"
     original = oferta.precio_original
-    info = oferta.info_cupon
+    info = resumen_info(oferta.info_cupon)
     cupon = oferta.cupon
     gancho = oferta.gancho_ia if include_hook else None
     emoji = oferta.emoji or "✨"
@@ -87,7 +88,7 @@ def render_offer_text(
                 f"📉 <b>Antes:</b> <s>{_esc(_corta(original, 60))}</s>{sufijo}"
             )
         if con_info and info:
-            lineas.append(f"🎟️ <b>Info Extra:</b> {_esc(_corta(info, info_max))}")
+            lineas.append(f"ℹ️ <b>Info:</b> {_esc(_corta(info, info_max))}")
         if cupon:
             lineas.append(f"✂️ <b>Cupón:</b> <code>{_esc(_corta(cupon, 40))}</code>")
         if link:

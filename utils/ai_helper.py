@@ -11,6 +11,7 @@ from typing import Optional
 import httpx
 
 from config import Config
+from utils.text import limpiar_titulo
 
 try:
     from google import genai
@@ -360,7 +361,7 @@ async def generar_gancho_ia(
         if original and str(original).lower() != "no disponible"
         else ""
     )
-    prompt = f"Producto: {titulo}\n{precio_str}\n{original_str}"
+    prompt = f"Producto: {limpiar_titulo(titulo)}\n{precio_str}\n{original_str}"
 
     system_instruction = (
         "Eres un carismático dominicano que comparte buenas ofertas en Telegram. "

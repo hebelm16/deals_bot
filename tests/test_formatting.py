@@ -19,7 +19,7 @@ def test_escapa_todos_los_campos():
         titulo='AT&T <b>SSD</b> & "Teclado"',
         precio="$99 & <100>",
         precio_original="$150 > $99",
-        info_cupon="A & B",
+        info_cupon="A & B coupon applied at checkout",
         cupon="A&B<C>",
         link="https://example.com/x?a=1&b=2",
     )
@@ -27,7 +27,7 @@ def test_escapa_todos_los_campos():
 
     assert "AT&amp;T &lt;b&gt;SSD&lt;/b&gt; &amp;" in texto
     assert "&lt;script&gt;" not in texto
-    assert "A &amp; B" in texto
+    assert "Cupón en la página" in texto
     assert "A&amp;B&lt;C&gt;" in texto
     assert 'href="https://example.com/x?a=1&amp;b=2"' in texto
     # Las etiquetas propias del mensaje sí se conservan.

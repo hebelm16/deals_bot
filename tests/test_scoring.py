@@ -74,6 +74,10 @@ def test_detecta_duplicados_entre_fuentes():
         "Apple AirPods Pro 3 Wireless Earbuds",
         "Refurb: Apple AirPods Pro 3 Wireless Earbuds",
     )
+    assert son_duplicados(
+        "Apple AirPods Pro 3 Wireless Earbuds $50",
+        "Refurb Apple AirPods Pro 3 Wireless Earbuds $55",
+    )
     assert not son_duplicados("Apple AirPods Pro 3", "Apple AirPods Pro 2")
     assert not son_duplicados(
         "Samsung 75-inch 4K Smart TV", "Samsung 65-inch 4K Smart TV"

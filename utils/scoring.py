@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence
 
 from utils.models import Oferta
+from utils.text import limpiar_titulo
 
 PRECIO_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)")
 
@@ -51,8 +52,8 @@ PESOS_FUENTE = {
 
 
 def normalizar_titulo(titulo: object) -> str:
-    """Minúsculas, sin acentos ni signos, para comparar títulos."""
-    texto = unicodedata.normalize("NFKD", str(titulo or ""))
+    """Minúsculas, sin acentos, precios ni signos, para comparar títulos."""
+    texto = unicodedata.normalize("NFKD", limpiar_titulo(titulo))
     texto = texto.encode("ascii", "ignore").decode("ascii").lower()
     return " ".join(re.findall(r"[a-z0-9]+", texto))
 

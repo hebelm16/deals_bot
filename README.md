@@ -19,6 +19,8 @@ a los usuarios suscritos a palabras clave.
   baja el fichero (o un candidato de la página) y lo sube directamente. Si no
   hay ninguna imagen disponible, usa `assets/oferta_sin_imagen.jpg` para que
   ninguna oferta salga sin foto.
+- Limpia los títulos (quita precio/shipping repetido) y resume la información
+  extra a etiquetas cortas: envío gratis, pickup o cupón en la página.
 - Escapa todo el HTML y recorta los mensajes a los límites de Telegram.
 - Envía alertas por palabra clave y permite borrarlas o darse de baja.
 - Guarda las ofertas como pendientes antes de enviarlas para evitar duplicados.
