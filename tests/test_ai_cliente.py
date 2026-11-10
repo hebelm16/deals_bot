@@ -36,6 +36,11 @@ def gemini_falso(monkeypatch):
     monkeypatch.setattr(ai_helper, "genai", SimpleNamespace(Client=_ClienteFalso))
     monkeypatch.setattr(ai_helper, "_cache", {})
 
+    async def sin_descubrimiento(_keys):
+        return []
+
+    monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", sin_descubrimiento)
+
 
 async def test_generar_gancho_con_cliente_falso(gemini_falso):
     gancho = await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
@@ -61,3 +66,35 @@ async def test_generar_gancho_usa_cache(gemini_falso, monkeypatch):
     segundo = await ai_helper.generar_gancho_ia("TV 4K", "$300", "$500")
     assert primero == segundo
     assert llamadas["n"] == 1
+
+
+async def test_prefiere_gemini_3_flash_sobre_versiones_altas(monkeypatch):
+    usados: list[str] = []
+
+    class ModelosGrabadores:
+        async def generate_content(self, **kwargs):
+            usados.append(kwargs["model"])
+            return _Respuesta()
+
+    monkeypatch.setattr(Config, "GEMINI_API_KEYS", "clave-falsa")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY_BACKUP", "")
+    monkeypatch.setattr(Config, "GROQ_API_KEY", "")
+    monkeypatch.setattr(
+        ai_helper,
+        "genai",
+        SimpleNamespace(
+            Client=lambda api_key=None: SimpleNamespace(
+                aio=SimpleNamespace(models=ModelosGrabadores())
+            )
+        ),
+    )
+    monkeypatch.setattr(ai_helper, "_cache", {})
+
+    async def descubiertos(_keys):
+        return ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3-flash"]
+
+    monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", descubiertos)
+
+    await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
+    assert usados[0] == "gemini-3-flash"

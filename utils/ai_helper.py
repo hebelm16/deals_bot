@@ -389,11 +389,20 @@ async def generar_gancho_ia(
             _registrar_fallo("config", "sin claves de Gemini utilizables")
         return resultado
 
+    preferidos = Config.gemini_model_preferidos()
     descubiertos = await descubrir_modelos_gemini(keys)
+    if descubiertos:
+        disponibles = set(descubiertos)
+        orden = [modelo for modelo in preferidos if modelo in disponibles]
+        orden.extend(modelo for modelo in descubiertos if modelo not in orden)
+    else:
+        orden = [*preferidos, *Config.gemini_models()]
+
     modelos: list[str] = []
-    for nombre in [*descubiertos, *Config.gemini_models()]:
+    for nombre in orden:
         if nombre and nombre not in modelos:
             modelos.append(nombre)
+    logger.debug("Modelos Gemini a probar: %s", ", ".join(modelos[:6]))
     for _ in range(3):
         key, wait_time = get_next_available_key(keys)
         if not key:

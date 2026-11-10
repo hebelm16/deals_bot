@@ -129,6 +129,8 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"+ respaldo {'sí' if config.GEMINI_API_KEY_BACKUP else 'no'}",
         f"Groq definido: <b>{'sí' if config.GROQ_API_KEY else 'no'}</b>",
         f"Modelos Gemini: <code>{html.escape(', '.join(config.gemini_models()))}</code>",
+        f"Preferencia Gemini: <code>{html.escape(', '.join(config.gemini_model_preferidos()))}</code>",
+        f"Timeout por llamada Gemini: {config.GEMINI_CALL_TIMEOUT_SECONDS}s",
         f"Modelo Groq: <code>{html.escape(config.GROQ_MODEL)}</code>",
         f"Gancho IA obligatorio: <b>{'sí' if config.AI_HOOK_REQUIRED else 'no'}</b>",
         f"Base de datos: <code>{html.escape(os.path.abspath(config.DATABASE))}</code>",
