@@ -46,6 +46,7 @@ async def test_ciclo_guarda_ofertas_y_envia_alerta(tmp_path, monkeypatch):
     config.ALERT_SEND_INTERVAL_SECONDS = 0
     config.SEND_OFFER_INTERVAL_SECONDS = 0
     config.AI_HOOK_REQUIRED = False
+    config.DESCARGAR_IMAGENES = False
 
     bot = OfertasBot(config=config, db_manager=db, scrapers={})
     fake = FakeBot()

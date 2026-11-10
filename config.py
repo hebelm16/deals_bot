@@ -59,9 +59,16 @@ class Config:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
     AI_HOOK_REQUIRED = _env_bool("AI_HOOK_REQUIRED", False)
     AI_HOOK_TIMEOUT_SECONDS = _env_int("AI_HOOK_TIMEOUT_SECONDS", 45)
+    GEMINI_CALL_TIMEOUT_SECONDS = _env_int("GEMINI_CALL_TIMEOUT_SECONDS", 15)
+    GROQ_CALL_TIMEOUT_SECONDS = _env_int("GROQ_CALL_TIMEOUT_SECONDS", 20)
+
+    # Imágenes: si Telegram no puede descargar la URL, se baja y se sube el fichero.
+    DESCARGAR_IMAGENES = _env_bool("DESCARGAR_IMAGENES", True)
+    IMAGE_MAX_BYTES = _env_int("IMAGE_MAX_BYTES", 5_000_000)
+    IMAGE_TIMEOUT_SECONDS = _env_int("IMAGE_TIMEOUT_SECONDS", 20)
 
     # Telegram polling / webhook
     TELEGRAM_POLLING_TIMEOUT = _env_int("TELEGRAM_POLLING_TIMEOUT", 30)
@@ -120,7 +127,7 @@ class Config:
         raw = (
             os.getenv("GEMINI_MODELS")
             or os.getenv("GEMINI_MODEL")
-            or "gemini-3-flash-preview,gemini-2.5-flash,gemini-2.0-flash"
+            or "gemini-2.5-flash,gemini-3-flash-preview,gemini-2.5-flash-lite"
         )
         models = []
         for model in raw.split(","):

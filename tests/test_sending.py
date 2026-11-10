@@ -3,6 +3,7 @@ from telegram.error import BadRequest
 from bot.ofertas_bot import OfertasBot
 from config import Config
 from database.db_manager import DBManager
+from utils.images import ImagenDescargada
 from utils.models import Oferta
 
 
@@ -11,15 +12,23 @@ class FakeMessage:
 
 
 class FakeBot:
-    def __init__(self, falla_foto: bool = False, falla_html: bool = False):
+    def __init__(
+        self,
+        falla_foto: bool = False,
+        falla_html: bool = False,
+        fallar_solo_primera: bool = False,
+    ):
         self.falla_foto = falla_foto
         self.falla_html = falla_html
+        self.fallar_solo_primera = fallar_solo_primera
         self.fotos = 0
         self.mensajes = 0
 
     async def send_photo(self, **kwargs):
         self.fotos += 1
-        if self.falla_foto:
+        if self.falla_foto and (
+            not self.fallar_solo_primera or self.fotos == 1
+        ):
             raise BadRequest("Wrong type of the web page content")
         return FakeMessage()
 
@@ -35,6 +44,7 @@ def crear_bot(tmp_path, fake: FakeBot, reintentos: int = 2) -> OfertasBot:
     config.CHANNEL_ID = "123"
     config.SEND_OFFER_MAX_RETRIES = reintentos
     config.SEND_OFFER_RETRY_SLEEP_SECONDS = 0
+    config.DESCARGAR_IMAGENES = False
     bot = OfertasBot(
         config=config,
         db_manager=DBManager(str(tmp_path / "envio.db")),
@@ -81,3 +91,22 @@ async def test_sin_imagen_envia_mensaje(tmp_path):
     assert await bot.enviar_oferta_con_reintento(crear_oferta(imagen=None)) == 42
     assert fake.fotos == 0
     assert fake.mensajes == 1
+
+
+async def test_usa_imagen_descargada_si_telegram_falla(tmp_path, monkeypatch):
+    fake = FakeBot(falla_foto=True, fallar_solo_primera=True)
+    bot = crear_bot(tmp_path, fake)
+    bot.config.DESCARGAR_IMAGENES = True
+
+    async def imagen_falsa(_oferta):
+        return ImagenDescargada(
+            contenido=b"contenido-jpeg",
+            nombre="oferta.jpg",
+            content_type="image/jpeg",
+        )
+
+    monkeypatch.setattr(bot, "_obtener_imagen", imagen_falsa)
+
+    assert await bot.enviar_oferta_con_reintento(crear_oferta()) == 42
+    assert fake.fotos == 2
+    assert fake.mensajes == 0

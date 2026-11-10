@@ -10,11 +10,12 @@ import os
 import random
 import signal
 import time
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.error import (
     BadRequest,
     Conflict,
@@ -28,7 +29,7 @@ from telegram.ext import Application
 from bot.handlers import setup_handlers
 from config import Config
 from database.db_manager import DBManager, canonicalizar_link
-from utils.ai_helper import gancho_respaldo, generar_gancho
+from utils.ai_helper import gancho_respaldo, generar_gancho, registrar_error_ia
 from utils.formatting import (
     CAPTION_LIMIT,
     MESSAGE_LIMIT,
@@ -36,6 +37,7 @@ from utils.formatting import (
     texto_plano,
 )
 from utils.health_server import start_health_server
+from utils.images import ImagenDescargada, resolver_imagen
 from utils.keywords import compilar_patron
 from utils.models import Oferta
 
@@ -67,6 +69,7 @@ class OfertasBot:
             "last_error": None,
         }
         self._ultimos_errores_scrapers: Dict[str, str] = {}
+        self._imagenes_cache: Dict[str, ImagenDescargada] = {}
 
     # ------------------------------------------------------------------ arranque
     def init_scrapers(self) -> Dict[str, Any]:
@@ -170,6 +173,7 @@ class OfertasBot:
             BotCommand("borrar_alerta", "Elimina una alerta existente"),
             BotCommand("estado", "Estado de fuentes y ciclo (Admin)"),
             BotCommand("diagnostico", "Diagnóstico técnico (Admin)"),
+            BotCommand("test_ia", "Prueba la conexión con la IA (Admin)"),
         ]
         try:
             await self.bot.set_my_commands(comandos)
@@ -388,6 +392,7 @@ class OfertasBot:
             )
             return gancho
         except asyncio.TimeoutError:
+            registrar_error_ia("bot", "timeout del gancho")
             logger.warning("Timeout generando gancho para '%s'", oferta.titulo)
             return (
                 None
@@ -480,6 +485,30 @@ class OfertasBot:
         imagen = (oferta.imagen or "").strip()
         return imagen.startswith(("http://", "https://"))
 
+    async def _obtener_imagen(self, oferta: Oferta) -> Optional[ImagenDescargada]:
+        """Descarga la imagen (y su og:image de respaldo) y la cachea por enlace."""
+        if not self.config.DESCARGAR_IMAGENES:
+            return None
+        clave = oferta.link or oferta.imagen or ""
+        if not clave:
+            return None
+        if clave in self._imagenes_cache:
+            return self._imagenes_cache[clave]
+        try:
+            imagen = await resolver_imagen(
+                oferta,
+                max_bytes=self.config.IMAGE_MAX_BYTES,
+                timeout=self.config.IMAGE_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error resolviendo imagen de %s: %s", oferta.link, exc)
+            imagen = None
+        if imagen:
+            if len(self._imagenes_cache) >= 10:
+                self._imagenes_cache.pop(next(iter(self._imagenes_cache)))
+            self._imagenes_cache[clave] = imagen
+        return imagen
+
     async def _enviar_mensaje(
         self,
         chat_id: str | int,
@@ -489,7 +518,7 @@ class OfertasBot:
         teclado: Optional[InlineKeyboardMarkup],
         usar_foto: bool,
     ):
-        if usar_foto:
+        if usar_foto and self._imagen_valida(oferta):
             try:
                 return await self.bot.send_photo(
                     chat_id=chat_id,
@@ -499,7 +528,26 @@ class OfertasBot:
                     parse_mode="HTML",
                 )
             except BadRequest as exc:
-                logger.warning("Foto rechazada (%s); se envía como texto", exc)
+                logger.warning(
+                    "Telegram no pudo bajar la foto (%s); se intenta subir el fichero",
+                    exc,
+                )
+
+        imagen = await self._obtener_imagen(oferta)
+        if imagen:
+            try:
+                return await self.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(BytesIO(imagen.contenido), filename=imagen.nombre),
+                    caption=caption,
+                    reply_markup=teclado,
+                    parse_mode="HTML",
+                )
+            except BadRequest as exc:
+                logger.warning(
+                    "La imagen descargada también fue rechazada (%s); se envía texto",
+                    exc,
+                )
 
         try:
             return await self.bot.send_message(

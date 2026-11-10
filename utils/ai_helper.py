@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import random
 import re
 import time
 from typing import Optional
@@ -31,6 +32,38 @@ _last_used_key_index = 0
 _cache: dict[tuple[str, str, str], str] = {}
 _CACHE_MAX = 300
 _sin_ia_avisado = False
+
+_estado: dict[str, object] = {
+    "ultimo_proveedor": None,
+    "ultimo_exito_ts": None,
+    "ultimo_error": None,
+    "ultimo_error_origen": None,
+    "ultimo_error_ts": None,
+    "exitos": 0,
+    "fallos": 0,
+}
+
+
+def estado_ia() -> dict[str, object]:
+    """Estado resumido del último intento de IA (para /diagnostico)."""
+    return dict(_estado)
+
+
+def _registrar_exito(proveedor: str) -> None:
+    _estado["ultimo_proveedor"] = proveedor
+    _estado["ultimo_exito_ts"] = int(time.time())
+    _estado["exitos"] = int(_estado["exitos"]) + 1
+
+
+def _registrar_fallo(origen: str, error: object) -> None:
+    _estado["ultimo_error"] = str(error)[:300]
+    _estado["ultimo_error_origen"] = origen
+    _estado["ultimo_error_ts"] = int(time.time())
+    _estado["fallos"] = int(_estado["fallos"]) + 1
+
+
+def registrar_error_ia(origen: str, error: object) -> None:
+    _registrar_fallo(origen, error)
 
 
 def get_all_gemini_keys() -> list[str]:
@@ -76,13 +109,27 @@ def gancho_respaldo(titulo: str, precio: str, original: Optional[str]) -> str:
     """Gancho sin IA para que una caída del proveedor no bloquee la publicación."""
     precio = (precio or "").strip()
     original = (original or "").strip()
-    titulo_corto = " ".join((titulo or "").split())[:80]
+    titulo_corto = " ".join((titulo or "").split())[:70]
 
     if precio and precio.lower() != "no disponible":
         if original and original.lower() != "no disponible":
-            return f"De {original} a {precio}. Buen momento para aprovechar."
+            variantes = [
+                f"De {original} a {precio}. Buen momento para aprovechar.",
+                f"Bajó de {original} a {precio}; vale la pena mirarlo.",
+                f"Ahora en {precio} (antes {original}). Ojo con esa oferta.",
+                f"Se dejó ver a {precio}; antes costaba {original}.",
+                f"Precio de hoy: {precio}. Venía de {original}.",
+            ]
+            if titulo_corto:
+                variantes.append(f"{titulo_corto}: {precio}. Está interesante.")
+            return random.choice(variantes)
         if titulo_corto:
-            return f"{titulo_corto}: {precio}. Vale la pena mirarlo."
+            variantes = [
+                f"{titulo_corto}: {precio}. Vale la pena mirarlo.",
+                f"Precio de hoy: {precio}. Échale un ojo.",
+                f"Se dejó ver a {precio}. Está nítido.",
+            ]
+            return random.choice(variantes)
         return f"Precio interesante: {precio}."
     if titulo_corto:
         return f"Oferta para revisar: {titulo_corto}."
@@ -109,22 +156,50 @@ async def fallback_groq(prompt: str, system_instruction: str) -> Optional[str]:
     if not api_key or not AsyncGroq:
         return None
 
+    modelos: list[str] = []
+    for modelo in (
+        getattr(Config, "GROQ_MODEL", ""),
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "llama-3.1-8b-instant",
+    ):
+        if modelo and modelo not in modelos:
+            modelos.append(modelo)
+
     try:
-        logger.info("Generando gancho con respaldo de Groq...")
         client = AsyncGroq(api_key=api_key)
-        response = await client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": prompt},
-            ],
-            model=getattr(Config, "GROQ_MODEL", "llama-3.3-70b-versatile"),
-            temperature=0.7,
-            max_tokens=250,
-        )
-        return _limpiar_gancho(response.choices[0].message.content)
-    except Exception as exc:  # noqa: BLE001 - se degrada a plantilla
-        logger.error("Error usando Groq: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _registrar_fallo("groq", exc)
+        logger.error("No se pudo crear el cliente de Groq: %s", exc)
         return None
+
+    for modelo in modelos:
+        try:
+            logger.info("Generando gancho con Groq (%s)...", modelo)
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=modelo,
+                    temperature=0.7,
+                    max_tokens=250,
+                ),
+                timeout=getattr(Config, "GROQ_CALL_TIMEOUT_SECONDS", 20),
+            )
+            texto = _limpiar_gancho(response.choices[0].message.content)
+            if texto:
+                _registrar_exito(f"groq:{modelo}")
+                return texto
+            _registrar_fallo(f"groq:{modelo}", "respuesta corta")
+        except asyncio.TimeoutError:
+            _registrar_fallo(f"groq:{modelo}", "timeout")
+            logger.warning("Groq (%s) excedió el tiempo de espera", modelo)
+        except Exception as exc:  # noqa: BLE001 - se prueba el siguiente modelo
+            _registrar_fallo(f"groq:{modelo}", exc)
+            logger.error("Error usando Groq (%s): %s", modelo, exc)
+    return None
 
 
 def _config_para_modelo(
@@ -197,6 +272,8 @@ async def generar_gancho_ia(
         resultado = await fallback_groq(prompt, system_instruction)
         if resultado:
             _guardar_cache(cache_key, resultado)
+        else:
+            _registrar_fallo("config", "sin claves de Gemini utilizables")
         return resultado
 
     modelos = Config.gemini_models()
@@ -220,6 +297,7 @@ async def generar_gancho_ia(
         try:
             client = genai.Client(api_key=key)
         except Exception as exc:  # noqa: BLE001 - clave o SDK inválidos
+            _registrar_fallo("gemini", exc)
             logger.error("No se pudo crear el cliente de Gemini: %s", exc)
             continue
 
@@ -228,19 +306,32 @@ async def generar_gancho_ia(
             for con_thinking in (True, False):
                 config = _config_para_modelo(modelo, system_instruction, con_thinking)
                 try:
-                    response = await client.aio.models.generate_content(
-                        model=modelo, contents=prompt, config=config
+                    response = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=modelo, contents=prompt, config=config
+                        ),
+                        timeout=getattr(Config, "GEMINI_CALL_TIMEOUT_SECONDS", 15),
                     )
                     texto = _limpiar_gancho(getattr(response, "text", None))
                     if texto:
+                        _registrar_exito(f"gemini:{modelo}")
                         _guardar_cache(cache_key, texto)
                         return texto
+                    _registrar_fallo(f"gemini:{modelo}", "respuesta corta")
                     logger.warning(
                         "Gancho demasiado corto con %s; se prueba otro modelo", modelo
                     )
                     break
+                except asyncio.TimeoutError:
+                    _registrar_fallo(f"gemini:{modelo}", "timeout")
+                    logger.warning(
+                        "Gemini (%s) excedió el tiempo de espera; se prueba otro modelo",
+                        modelo,
+                    )
+                    break
                 except Exception as exc:  # noqa: BLE001 - se decide por tipo de error
                     error_msg = str(exc)
+                    _registrar_fallo(f"gemini:{modelo}", exc)
                     if (
                         "429" in error_msg
                         or "RESOURCE_EXHAUSTED" in error_msg

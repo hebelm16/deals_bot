@@ -10,7 +10,8 @@ a los usuarios suscritos a palabras clave.
 - Deduplica por enlace canónico y por hash, incluyendo ofertas históricas.
 - Genera un gancho con Gemini (rotación de claves) y respaldo en Groq; si no hay
   IA, publica con una plantilla para no bloquear el canal.
-- Publica con imagen y botón; si la imagen falla, reenvía como texto.
+- Publica con imagen y botón; si Telegram no puede descargar la imagen, el bot
+  baja el fichero (o su `og:image`) y lo sube directamente.
 - Escapa todo el HTML y recorta los mensajes a los límites de Telegram.
 - Envía alertas por palabra clave y permite borrarlas o darse de baja.
 - Guarda las ofertas como pendientes antes de enviarlas para evitar duplicados.
@@ -87,7 +88,8 @@ propietario del volumen `/data` antes de bajar privilegios con `gosu`.
 | `/borrar_alerta <palabra>` | Todos | Elimina una alerta |
 | `/borrar_mis_datos` | Todos | Borra todas las suscripciones |
 | `/estado` | Admin | Fuentes, último ciclo y totales |
-| `/diagnostico` | Admin | IA, base de datos, pendientes y errores |
+| `/diagnostico` | Admin | IA, base de datos, pendientes, webhook y errores |
+| `/test_ia` | Admin | Prueba real de IA y muestra el proveedor o el error |
 | `/habilitar`, `/deshabilitar` | Admin | Cambian fuentes y lo persisten |
 
 ## Estructura
@@ -121,3 +123,18 @@ auditoría de dependencias en cada push y pull request.
 - Si el token estuvo dentro de una imagen Docker construida en local, rótalo.
 - No versiones `ofertas.db`: puede contener ids de usuario y palabras clave.
 - El webhook usa `secret_token` y una ruta fija separada del token del bot.
+
+## Solución de problemas
+
+- **Todas las ofertas con el mismo texto** (“De X a Y. Buen momento…”): la IA no
+  está devolviendo gancho y se está usando la plantilla. Ejecuta `/test_ia` y
+  `/diagnostico`: muestran el proveedor, el modelo y el error exacto. Revisa que
+  las variables de Railway se llamen `GEMINI_API_KEYS`/`GEMINI_API_KEY` y
+  `GROQ_API_KEY`, y que los modelos configurados existan para tu clave.
+- **Ofertas sin foto**: el bot intenta primero la URL; si Telegram la rechaza,
+  descarga el archivo o el `og:image` de la página y lo sube. Si tampoco hay
+  imagen, publica texto para no perder la oferta.
+- **Webhook caído**: se intenta polling automáticamente. Revisa `WEBHOOK_URL`
+  (solo el dominio, sin `/webhook`) y que el puerto público coincida con `PORT`.
+- **Sin suscripciones tras un redeploy**: falta el volumen en `/data` o
+  `DATABASE` no apunta a `/data/ofertas.db`.

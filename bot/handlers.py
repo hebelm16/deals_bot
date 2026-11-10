@@ -1,12 +1,15 @@
 """Comandos de usuario y administración del bot."""
 
+import asyncio
 import html
 import os
+import time
 from functools import wraps
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
+from utils.ai_helper import estado_ia, generar_gancho_ia
 from utils.keywords import normalizar_keyword
 
 
@@ -15,6 +18,7 @@ def setup_handlers(application, bot) -> None:
     application.add_handler(CommandHandler("ayuda", comando_ayuda))
     application.add_handler(CommandHandler("estado", obtener_estado))
     application.add_handler(CommandHandler("diagnostico", diagnostico))
+    application.add_handler(CommandHandler("test_ia", test_ia))
     application.add_handler(CommandHandler("habilitar", habilitar_fuente))
     application.add_handler(CommandHandler("deshabilitar", deshabilitar_fuente))
     application.add_handler(CommandHandler("alerta", agregar_alerta))
@@ -115,7 +119,12 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "<b>Diagnóstico técnico</b>",
         "",
         f"IA configurada: <b>{'sí' if config.has_ai() else 'no'}</b>",
+        f"Claves Gemini definidas: {len(config.GEMINI_API_KEYS.split(',')) if config.GEMINI_API_KEYS else 0} "
+        f"+ principal {'sí' if config.GEMINI_API_KEY else 'no'} "
+        f"+ respaldo {'sí' if config.GEMINI_API_KEY_BACKUP else 'no'}",
+        f"Groq definido: <b>{'sí' if config.GROQ_API_KEY else 'no'}</b>",
         f"Modelos Gemini: <code>{html.escape(', '.join(config.gemini_models()))}</code>",
+        f"Modelo Groq: <code>{html.escape(config.GROQ_MODEL)}</code>",
         f"Gancho IA obligatorio: <b>{'sí' if config.AI_HOOK_REQUIRED else 'no'}</b>",
         f"Base de datos: <code>{html.escape(os.path.abspath(config.DATABASE))}</code>",
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']}",
@@ -141,6 +150,26 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             lineas.append(
                 f"• {html.escape(nombre)}: <code>{html.escape(str(error)[:120])}</code>"
             )
+
+    estado = estado_ia()
+    lineas.append("")
+    lineas.append("<b>IA:</b>")
+    lineas.append(
+        f"Último proveedor: <code>{html.escape(str(estado['ultimo_proveedor'] or '—'))}</code>"
+    )
+    if estado["ultimo_error"] and (
+        not estado["ultimo_exito_ts"]
+        or int(estado["ultimo_error_ts"] or 0) >= int(estado["ultimo_exito_ts"] or 0)
+    ):
+        lineas.append(
+            "Último error: "
+            f"<code>{html.escape(str(estado['ultimo_error_origen']))}: "
+            f"{html.escape(str(estado['ultimo_error'])[:200])}</code>"
+        )
+    lineas.append(
+        f"Éxitos: {estado['exitos']} · Fallos: {estado['fallos']}"
+    )
+
     try:
         info = await bot.bot.get_webhook_info()
         lineas.append("")
@@ -158,6 +187,52 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as exc:  # noqa: BLE001
         lineas.append(
             f"Telegram: no se pudo consultar el webhook (<code>{html.escape(str(exc)[:120])}</code>)"
+        )
+    await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
+
+
+@admin_required
+async def test_ia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Prueba real de IA desde Telegram; muestra proveedor o el error exacto."""
+    bot = context.bot_data["bot"]
+    config = bot.config
+    await update.message.reply_text("Probando IA, espera unos segundos…")
+    inicio = time.monotonic()
+    resultado = None
+    try:
+        resultado = await asyncio.wait_for(
+            generar_gancho_ia(
+                f"Prueba de conexión {int(time.time())}", "$10.00", "$20.00"
+            ),
+            timeout=config.AI_HOOK_TIMEOUT_SECONDS + 15,
+        )
+    except asyncio.TimeoutError:
+        resultado = None
+
+    estado = estado_ia()
+    if resultado:
+        await update.message.reply_text(
+            "✅ <b>IA funcionando</b>\n"
+            f"Tiempo: {int((time.monotonic() - inicio) * 1000)} ms\n"
+            f"Proveedor: <code>{html.escape(str(estado['ultimo_proveedor']))}</code>\n"
+            f"Gancho: <i>{html.escape(resultado)}</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    lineas = [
+        "❌ <b>La IA no devolvió gancho</b>",
+        f"IA configurada: {'sí' if config.has_ai() else 'no'}",
+        f"Modelos: <code>{html.escape(', '.join(config.gemini_models()))}</code>",
+        f"Groq: <code>{html.escape(config.GROQ_MODEL)}</code>",
+    ]
+    if estado["ultimo_error"]:
+        lineas.append(
+            "Origen: "
+            f"<code>{html.escape(str(estado['ultimo_error_origen']))}</code>"
+        )
+        lineas.append(
+            f"Error: <code>{html.escape(str(estado['ultimo_error'])[:300])}</code>"
         )
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
 
