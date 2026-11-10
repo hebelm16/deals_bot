@@ -11,7 +11,9 @@ a los usuarios suscritos a palabras clave.
 - Genera un gancho con Gemini (rotación de claves) y respaldo en Groq; si no hay
   IA, publica con una plantilla para no bloquear el canal.
 - Publica con imagen y botón; si Telegram no puede descargar la imagen, el bot
-  baja el fichero (o su `og:image`) y lo sube directamente.
+  baja el fichero (o un candidato de la página) y lo sube directamente. Si no
+  hay ninguna imagen disponible, usa `assets/oferta_sin_imagen.jpg` para que
+  ninguna oferta salga sin foto.
 - Escapa todo el HTML y recorta los mensajes a los límites de Telegram.
 - Envía alertas por palabra clave y permite borrarlas o darse de baja.
 - Guarda las ofertas como pendientes antes de enviarlas para evitar duplicados.
@@ -131,9 +133,10 @@ auditoría de dependencias en cada push y pull request.
   `/diagnostico`: muestran el proveedor, el modelo y el error exacto. Revisa que
   las variables de Railway se llamen `GEMINI_API_KEYS`/`GEMINI_API_KEY` y
   `GROQ_API_KEY`, y que los modelos configurados existan para tu clave.
-- **Ofertas sin foto**: el bot intenta primero la URL; si Telegram la rechaza,
-  descarga el archivo o el `og:image` de la página y lo sube. Si tampoco hay
-  imagen, publica texto para no perder la oferta.
+- **Ofertas sin foto**: el bot intenta la URL, luego descarga el archivo o un
+  candidato de la página (`og:image`, JSON-LD, `<img>`). Si no encuentra nada,
+  usa la imagen de respaldo; revisa `/diagnostico` para ver el contador de
+  imágenes por URL, descargadas, respaldo y texto.
 - **Webhook caído**: se intenta polling automáticamente. Revisa `WEBHOOK_URL`
   (solo el dominio, sin `/webhook`) y que el puerto público coincida con `PORT`.
 - **Sin suscripciones tras un redeploy**: falta el volumen en `/data` o

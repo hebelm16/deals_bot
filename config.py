@@ -69,6 +69,10 @@ class Config:
     DESCARGAR_IMAGENES = _env_bool("DESCARGAR_IMAGENES", True)
     IMAGE_MAX_BYTES = _env_int("IMAGE_MAX_BYTES", 5_000_000)
     IMAGE_TIMEOUT_SECONDS = _env_int("IMAGE_TIMEOUT_SECONDS", 20)
+    USAR_PLACEHOLDER = _env_bool("USAR_PLACEHOLDER", True)
+    PLACEHOLDER_IMAGE = os.getenv(
+        "PLACEHOLDER_IMAGE", "assets/oferta_sin_imagen.jpg"
+    )
 
     # Telegram polling / webhook
     TELEGRAM_POLLING_TIMEOUT = _env_int("TELEGRAM_POLLING_TIMEOUT", 30)
@@ -168,4 +172,10 @@ class Config:
                 "No hay proveedor de IA configurado: las ofertas se publicarán "
                 "con gancho de plantilla. Define GEMINI_API_KEY/GEMINI_API_KEYS "
                 "o GROQ_API_KEY para usar IA."
+            )
+        if cls.USAR_PLACEHOLDER and not os.path.exists(cls.PLACEHOLDER_IMAGE):
+            logger.warning(
+                "No existe la imagen de respaldo %s; las ofertas sin foto se "
+                "publicarán como texto.",
+                cls.PLACEHOLDER_IMAGE,
             )

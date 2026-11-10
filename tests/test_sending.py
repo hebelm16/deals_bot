@@ -16,19 +16,20 @@ class FakeBot:
         self,
         falla_foto: bool = False,
         falla_html: bool = False,
-        fallar_solo_primera: bool = False,
+        falla_foto_url: bool = False,
     ):
         self.falla_foto = falla_foto
         self.falla_html = falla_html
-        self.fallar_solo_primera = fallar_solo_primera
+        self.falla_foto_url = falla_foto_url
         self.fotos = 0
         self.mensajes = 0
 
     async def send_photo(self, **kwargs):
         self.fotos += 1
-        if self.falla_foto and (
-            not self.fallar_solo_primera or self.fotos == 1
-        ):
+        foto = kwargs.get("photo")
+        if self.falla_foto:
+            raise BadRequest("Wrong type of the web page content")
+        if self.falla_foto_url and isinstance(foto, str):
             raise BadRequest("Wrong type of the web page content")
         return FakeMessage()
 
@@ -45,6 +46,7 @@ def crear_bot(tmp_path, fake: FakeBot, reintentos: int = 2) -> OfertasBot:
     config.SEND_OFFER_MAX_RETRIES = reintentos
     config.SEND_OFFER_RETRY_SLEEP_SECONDS = 0
     config.DESCARGAR_IMAGENES = False
+    config.USAR_PLACEHOLDER = False
     bot = OfertasBot(
         config=config,
         db_manager=DBManager(str(tmp_path / "envio.db")),
@@ -71,7 +73,7 @@ async def test_si_falla_la_foto_se_envia_texto(tmp_path):
     bot = crear_bot(tmp_path, fake)
 
     assert await bot.enviar_oferta_con_reintento(crear_oferta()) == 42
-    assert fake.fotos == 1
+    assert fake.fotos == 2
     assert fake.mensajes == 1
 
 
@@ -94,7 +96,7 @@ async def test_sin_imagen_envia_mensaje(tmp_path):
 
 
 async def test_usa_imagen_descargada_si_telegram_falla(tmp_path, monkeypatch):
-    fake = FakeBot(falla_foto=True, fallar_solo_primera=True)
+    fake = FakeBot(falla_foto_url=True)
     bot = crear_bot(tmp_path, fake)
     bot.config.DESCARGAR_IMAGENES = True
 
@@ -108,5 +110,16 @@ async def test_usa_imagen_descargada_si_telegram_falla(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "_obtener_imagen", imagen_falsa)
 
     assert await bot.enviar_oferta_con_reintento(crear_oferta()) == 42
-    assert fake.fotos == 2
+    assert fake.fotos == 3
     assert fake.mensajes == 0
+
+
+async def test_usa_placeholder_cuando_no_hay_imagen(tmp_path):
+    fake = FakeBot(falla_foto_url=True)
+    bot = crear_bot(tmp_path, fake)
+    bot.config.USAR_PLACEHOLDER = True
+
+    assert await bot.enviar_oferta_con_reintento(crear_oferta()) == 42
+    assert fake.fotos == 3
+    assert fake.mensajes == 0
+    assert bot._imagen_stats["placeholder"] == 1

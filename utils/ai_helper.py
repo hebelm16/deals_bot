@@ -121,7 +121,9 @@ def gancho_respaldo(titulo: str, precio: str, original: Optional[str]) -> str:
                 f"Precio de hoy: {precio}. Venía de {original}.",
             ]
             if titulo_corto:
-                variantes.append(f"{titulo_corto}: {precio}. Está interesante.")
+                variantes.append(
+                    f"{titulo_corto}: {precio} (antes {original}). Está interesante."
+                )
             return random.choice(variantes)
         if titulo_corto:
             variantes = [

@@ -115,6 +115,7 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     ultimo_ok = await db.get_ajuste("ultimo_ciclo_ok")
     ultimo_error = await db.get_ajuste("ultimo_ciclo_detalle", "")
 
+    imagenes = getattr(bot, "_imagen_stats", {})
     lineas = [
         "<b>Diagnóstico técnico</b>",
         "",
@@ -129,6 +130,9 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"Base de datos: <code>{html.escape(os.path.abspath(config.DATABASE))}</code>",
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']}",
         f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']}",
+        "Imágenes: "
+        f"URL {imagenes.get('url', 0)} · descargadas {imagenes.get('descargada', 0)} · "
+        f"respaldo {imagenes.get('placeholder', 0)} · texto {imagenes.get('texto', 0)}",
         "",
         "<b>Fuentes:</b>",
     ]

@@ -70,6 +70,13 @@ class OfertasBot:
         }
         self._ultimos_errores_scrapers: Dict[str, str] = {}
         self._imagenes_cache: Dict[str, ImagenDescargada] = {}
+        self._placeholder_bytes: Optional[bytes] = None
+        self._imagen_stats: Dict[str, int] = {
+            "url": 0,
+            "descargada": 0,
+            "placeholder": 0,
+            "texto": 0,
+        }
 
     # ------------------------------------------------------------------ arranque
     def init_scrapers(self) -> Dict[str, Any]:
@@ -509,6 +516,61 @@ class OfertasBot:
             self._imagenes_cache[clave] = imagen
         return imagen
 
+    def _datos_placeholder(self) -> Optional[bytes]:
+        """Carga (una vez) la imagen de respaldo para ofertas sin foto."""
+        if self._placeholder_bytes is None:
+            ruta = self.config.PLACEHOLDER_IMAGE
+            try:
+                with open(ruta, "rb") as archivo:
+                    self._placeholder_bytes = archivo.read()
+            except OSError as exc:
+                logger.warning(
+                    "No se pudo leer la imagen de respaldo %s: %s", ruta, exc
+                )
+                self._placeholder_bytes = b""
+        return self._placeholder_bytes or None
+
+    async def _enviar_foto_url(
+        self,
+        chat_id: str | int,
+        url: str,
+        caption: str,
+        teclado: Optional[InlineKeyboardMarkup],
+    ):
+        for intento in (1, 2):
+            try:
+                return await self.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=url,
+                    caption=caption if intento == 1 else texto_plano(caption),
+                    reply_markup=teclado,
+                    parse_mode="HTML" if intento == 1 else None,
+                )
+            except BadRequest as exc:
+                logger.warning("Telegram rechazó la foto por URL (%s)", exc)
+        return None
+
+    async def _enviar_foto_bytes(
+        self,
+        chat_id: str | int,
+        datos: bytes,
+        nombre: str,
+        caption: str,
+        teclado: Optional[InlineKeyboardMarkup],
+    ):
+        for intento in (1, 2):
+            try:
+                return await self.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(BytesIO(datos), filename=nombre),
+                    caption=caption if intento == 1 else texto_plano(caption),
+                    reply_markup=teclado,
+                    parse_mode="HTML" if intento == 1 else None,
+                )
+            except BadRequest as exc:
+                logger.warning("Telegram rechazó la imagen subida (%s)", exc)
+        return None
+
     async def _enviar_mensaje(
         self,
         chat_id: str | int,
@@ -519,36 +581,33 @@ class OfertasBot:
         usar_foto: bool,
     ):
         if usar_foto and self._imagen_valida(oferta):
-            try:
-                return await self.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=oferta.imagen,
-                    caption=caption,
-                    reply_markup=teclado,
-                    parse_mode="HTML",
-                )
-            except BadRequest as exc:
-                logger.warning(
-                    "Telegram no pudo bajar la foto (%s); se intenta subir el fichero",
-                    exc,
-                )
+            enviado = await self._enviar_foto_url(
+                chat_id, oferta.imagen, caption, teclado
+            )
+            if enviado:
+                self._imagen_stats["url"] += 1
+                return enviado
 
         imagen = await self._obtener_imagen(oferta)
         if imagen:
-            try:
-                return await self.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=InputFile(BytesIO(imagen.contenido), filename=imagen.nombre),
-                    caption=caption,
-                    reply_markup=teclado,
-                    parse_mode="HTML",
-                )
-            except BadRequest as exc:
-                logger.warning(
-                    "La imagen descargada también fue rechazada (%s); se envía texto",
-                    exc,
-                )
+            enviado = await self._enviar_foto_bytes(
+                chat_id, imagen.contenido, imagen.nombre, caption, teclado
+            )
+            if enviado:
+                self._imagen_stats["descargada"] += 1
+                return enviado
 
+        if self.config.USAR_PLACEHOLDER:
+            datos = self._datos_placeholder()
+            if datos:
+                enviado = await self._enviar_foto_bytes(
+                    chat_id, datos, "oferta_sin_imagen.jpg", caption, teclado
+                )
+                if enviado:
+                    self._imagen_stats["placeholder"] += 1
+                    return enviado
+
+        self._imagen_stats["texto"] += 1
         try:
             return await self.bot.send_message(
                 chat_id=chat_id,
