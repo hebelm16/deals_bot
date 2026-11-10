@@ -147,6 +147,17 @@ def _limpiar_gancho(texto: Optional[str]) -> Optional[str]:
         limpio = limpio[:179].rstrip() + "…"
     if len(limpio) < 15:
         return None
+    # Rechaza respuestas cortadas a mitad de frase (típico al agotar max_tokens).
+    if limpio[-1] in "$€£¥%&/+*-_=,;:([{":
+        return None
+    if re.search(
+        r"\b(de|del|a|al|con|para|por|en|y|o|desde|hasta|solo|muy|mas|más)$",
+        limpio,
+        re.IGNORECASE,
+    ):
+        return None
+    if not re.search(r"[.!?…]$", limpio):
+        limpio = limpio + "."
     return limpio
 
 
@@ -184,7 +195,7 @@ async def fallback_groq(prompt: str, system_instruction: str) -> Optional[str]:
                     ],
                     model=modelo,
                     temperature=0.7,
-                    max_tokens=250,
+                    max_tokens=600,
                 ),
                 timeout=getattr(Config, "GROQ_CALL_TIMEOUT_SECONDS", 20),
             )

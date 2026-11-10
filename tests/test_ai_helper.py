@@ -1,5 +1,5 @@
 from config import Config
-from utils.ai_helper import gancho_respaldo, generar_gancho
+from utils.ai_helper import _limpiar_gancho, gancho_respaldo, generar_gancho
 
 
 def _sin_ia(monkeypatch):
@@ -31,3 +31,16 @@ def test_plantilla_con_precio_sin_original():
 
 def test_plantilla_sin_precio():
     assert gancho_respaldo("Producto interesante", "No disponible", None)
+
+
+def test_rechaza_gancho_cortado_a_mitad():
+    assert _limpiar_gancho("Prueba de conexión 123 a solo $") is None
+    assert _limpiar_gancho("Una oferta muy buena para") is None
+
+
+def test_agrega_punto_si_falta():
+    assert _limpiar_gancho("Oferta nítida en SSD 1TB") == "Oferta nítida en SSD 1TB."
+
+
+def test_conserva_gancho_completo():
+    assert _limpiar_gancho("Ese SSD está nítido, klk.") == "Ese SSD está nítido, klk."

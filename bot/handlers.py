@@ -157,12 +157,9 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lineas.append(
         f"Último proveedor: <code>{html.escape(str(estado['ultimo_proveedor'] or '—'))}</code>"
     )
-    if estado["ultimo_error"] and (
-        not estado["ultimo_exito_ts"]
-        or int(estado["ultimo_error_ts"] or 0) >= int(estado["ultimo_exito_ts"] or 0)
-    ):
+    if estado["ultimo_error"]:
         lineas.append(
-            "Último error: "
+            f"Último error ({time_str(estado['ultimo_error_ts'])}): "
             f"<code>{html.escape(str(estado['ultimo_error_origen']))}: "
             f"{html.escape(str(estado['ultimo_error'])[:200])}</code>"
         )
@@ -211,12 +208,20 @@ async def test_ia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     estado = estado_ia()
     if resultado:
-        await update.message.reply_text(
-            "✅ <b>IA funcionando</b>\n"
-            f"Tiempo: {int((time.monotonic() - inicio) * 1000)} ms\n"
-            f"Proveedor: <code>{html.escape(str(estado['ultimo_proveedor']))}</code>\n"
+        lineas_resultado = [
+            "✅ <b>IA funcionando</b>",
+            f"Tiempo: {int((time.monotonic() - inicio) * 1000)} ms",
+            f"Proveedor: <code>{html.escape(str(estado['ultimo_proveedor']))}</code>",
             f"Gancho: <i>{html.escape(resultado)}</i>",
-            parse_mode="HTML",
+        ]
+        if estado["ultimo_error"]:
+            lineas_resultado.append(
+                "Último error previo: "
+                f"<code>{html.escape(str(estado['ultimo_error_origen']))}: "
+                f"{html.escape(str(estado['ultimo_error'])[:160])}</code>"
+            )
+        await update.message.reply_text(
+            "\n".join(lineas_resultado), parse_mode="HTML"
         )
         return
 
