@@ -62,7 +62,7 @@ class Config:
     GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
     AI_HOOK_REQUIRED = _env_bool("AI_HOOK_REQUIRED", False)
     AI_HOOK_TIMEOUT_SECONDS = _env_int("AI_HOOK_TIMEOUT_SECONDS", 45)
-    GEMINI_CALL_TIMEOUT_SECONDS = _env_int("GEMINI_CALL_TIMEOUT_SECONDS", 10)
+    GEMINI_CALL_TIMEOUT_SECONDS = _env_int("GEMINI_CALL_TIMEOUT_SECONDS", 8)
     GROQ_CALL_TIMEOUT_SECONDS = _env_int("GROQ_CALL_TIMEOUT_SECONDS", 20)
 
     # Imágenes: si Telegram no puede descargar la URL, se baja y se sube el fichero.
@@ -128,12 +128,11 @@ class Config:
 
     @classmethod
     def gemini_model_preferidos(cls) -> list[str]:
-        """Orden de preferencia: primero los Flash base y versiones bajas (rápidas)."""
+        """Modelo principal elegido para el canal y alternativas de respaldo."""
         raw = (
             os.getenv("GEMINI_MODEL_PREFERIDOS")
             or os.getenv("GEMINI_MODEL")
-            or "gemini-3-flash,gemini-3.5-flash,gemini-3.6-flash,"
-            "gemini-3.7-flash,gemini-3.8-flash"
+            or "gemini-3-flash-preview"
         )
         modelos = []
         for modelo in raw.split(","):
@@ -147,8 +146,8 @@ class Config:
         raw = (
             os.getenv("GEMINI_MODELS")
             or os.getenv("GEMINI_MODEL")
-            or "gemini-3-flash,gemini-3.5-flash,gemini-3.6-flash,"
-            "gemini-3.7-flash,gemini-3.8-flash"
+            or "gemini-3-flash-preview,gemini-3-flash,gemini-3.6-flash,"
+            "gemini-3.5-flash,gemini-3.7-flash,gemini-3.8-flash"
         )
         models = []
         for model in raw.split(","):

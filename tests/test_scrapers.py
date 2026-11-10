@@ -1,5 +1,7 @@
+import pytest
 from bs4 import BeautifulSoup
 
+from scrapers.base_scraper import ScraperError
 from scrapers.dealnews_scraper import DealsnewsScraper
 from scrapers.dealsofamerica_scraper import DealsOfAmericaScraper
 from scrapers.slickdeals_scraper import SlickdealsScraper
@@ -23,6 +25,48 @@ def test_slickdeals_feed_parser(mock_slickdeals_rss):
     segunda = ofertas[1]
     assert segunda.precio == "$49.99"
     assert segunda.precio_original == "$89.99"
+
+
+def test_slickdeals_recupera_xml_malformado():
+    scraper = SlickdealsScraper(
+        name="slickdeals", url="https://feeds.feedburner.com/SlickdealsnetFP", tag="#Slickdeals"
+    )
+    rss = """<?xml version="1.0"?>
+    <rss version="2.0"><channel><item>
+      <title>TV & Soundbar $100</title>
+      <link>https://slickdeals.net/f/1</link>
+      <description>Oferta con descuento & envío gratis</description>
+    </item></channel></rss>"""
+
+    ofertas = scraper.parsear_feed(rss)
+
+    assert len(ofertas) == 1
+    assert "TV & Soundbar" in ofertas[0].titulo
+    assert ofertas[0].precio == "$100"
+
+
+def test_slickdeals_usa_parser_html_si_el_xml_esta_truncado():
+    scraper = SlickdealsScraper(
+        name="slickdeals", url="https://feeds.feedburner.com/SlickdealsnetFP", tag="#Slickdeals"
+    )
+    rss = """<rss version="2.0"><channel><item>
+      <title>Monitor 27 pulgadas $150</title>
+      <link>https://slickdeals.net/f/2</link>
+      <description>Buen precio</description>
+    </item>"""
+
+    ofertas = scraper.parsear_feed(rss)
+
+    assert len(ofertas) == 1
+    assert ofertas[0].precio == "$150"
+
+
+def test_slickdeals_rechaza_pagina_html():
+    scraper = SlickdealsScraper(
+        name="slickdeals", url="https://feeds.feedburner.com/SlickdealsnetFP", tag="#Slickdeals"
+    )
+    with pytest.raises(ScraperError):
+        scraper.parsear_feed("<html><body>Just a moment...</body></html>")
 
 
 def test_dealnews_extractor(mock_dealnews_html):

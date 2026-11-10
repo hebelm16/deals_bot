@@ -391,12 +391,9 @@ async def generar_gancho_ia(
 
     preferidos = Config.gemini_model_preferidos()
     descubiertos = await descubrir_modelos_gemini(keys)
-    if descubiertos:
-        disponibles = set(descubiertos)
-        orden = [modelo for modelo in preferidos if modelo in disponibles]
-        orden.extend(modelo for modelo in descubiertos if modelo not in orden)
-    else:
-        orden = [*preferidos, *Config.gemini_models()]
+    # El modelo elegido se intenta siempre primero; el descubrimiento solo
+    # aporta alternativas si ese modelo no está disponible para la clave.
+    orden = [*preferidos, *descubiertos, *Config.gemini_models()]
 
     modelos: list[str] = []
     for nombre in orden:
@@ -436,7 +433,7 @@ async def generar_gancho_ia(
                         client.aio.models.generate_content(
                             model=modelo, contents=prompt, config=config
                         ),
-                        timeout=getattr(Config, "GEMINI_CALL_TIMEOUT_SECONDS", 15),
+                        timeout=getattr(Config, "GEMINI_CALL_TIMEOUT_SECONDS", 8),
                     )
                     texto = _limpiar_gancho(getattr(response, "text", None))
                     if texto:
