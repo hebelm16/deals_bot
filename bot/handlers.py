@@ -141,6 +141,24 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             lineas.append(
                 f"• {html.escape(nombre)}: <code>{html.escape(str(error)[:120])}</code>"
             )
+    try:
+        info = await bot.bot.get_webhook_info()
+        lineas.append("")
+        lineas.append("<b>Telegram:</b>")
+        if info.url:
+            lineas.append(f"Webhook: <code>{html.escape(info.url)}</code>")
+            lineas.append(f"Updates pendientes: {info.pending_update_count}")
+            if info.last_error_message:
+                lineas.append(
+                    "Último error del webhook: "
+                    f"<code>{html.escape(str(info.last_error_message)[:200])}</code>"
+                )
+        else:
+            lineas.append("Modo: polling (sin webhook)")
+    except Exception as exc:  # noqa: BLE001
+        lineas.append(
+            f"Telegram: no se pudo consultar el webhook (<code>{html.escape(str(exc)[:120])}</code>)"
+        )
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
 
 

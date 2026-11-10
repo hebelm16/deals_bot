@@ -183,23 +183,34 @@ class OfertasBot:
             ).hexdigest()[:32]
             url_webhook = f"{self.config.WEBHOOK_URL}/webhook"
             logger.info("Iniciando en modo webhook en el puerto %s", self.config.PORT)
-            await self.application.updater.start_webhook(
-                listen="0.0.0.0",
-                port=self.config.PORT,
-                url_path="webhook",
-                webhook_url=url_webhook,
-                secret_token=secreto,
-                drop_pending_updates=False,
-            )
-        else:
-            logger.info("Iniciando en modo polling")
-            await self.bot.delete_webhook(drop_pending_updates=False)
-            await self.application.updater.start_polling(
-                drop_pending_updates=False,
-                error_callback=self._telegram_error_callback,
-                timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
-            )
+            try:
+                await self.application.updater.start_webhook(
+                    listen="0.0.0.0",
+                    port=self.config.PORT,
+                    url_path="webhook",
+                    webhook_url=url_webhook,
+                    secret_token=secreto,
+                    drop_pending_updates=False,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - se intenta polling como respaldo
+                logger.error(
+                    "No se pudo iniciar el webhook (%s). Se usará polling.", exc
+                )
+                try:
+                    if self.application.updater.running:
+                        await self.application.updater.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        logger.info("Iniciando en modo polling")
+        await self.bot.delete_webhook(drop_pending_updates=False)
+        await self.application.updater.start_polling(
+            drop_pending_updates=False,
+            error_callback=self._telegram_error_callback,
+            timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+            poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
+        )
 
     def _instalar_senales(self) -> None:
         loop = asyncio.get_running_loop()

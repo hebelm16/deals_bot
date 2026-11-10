@@ -1,3 +1,4 @@
+APScheduler==3.11.3
 aiosqlite==0.22.1
 beautifulsoup4==4.15.0
 filelock==4.2.10
@@ -5,5 +6,6 @@ google-genai==3.0.0
 groq==1.7.0
 httpx==0.28.1
 python-dotenv==1.2.4
-python-telegram-bot[job-queue]==22.5
+python-telegram-bot[webhooks,job-queue]==22.5
 tenacity==9.1.4
+tornado==6.6.1
