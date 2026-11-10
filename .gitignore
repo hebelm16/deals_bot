@@ -40,3 +40,21 @@ ms-playwright/
 .vscode/
 .idea/
 *.swp
+
+# Entornos de desarrollo adicionales
+.venv-dev/
+
+# Variables de entorno adicionales (mantener .env.example)
+.env.*
+!.env.example
+
+# Ficheros auxiliares de SQLite
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Herramientas y cobertura
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

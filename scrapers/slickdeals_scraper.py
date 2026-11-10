@@ -1,13 +1,30 @@
-import logging
-from bs4 import BeautifulSoup
-import httpx
-from typing import List, Dict, Any
-from tenacity import retry, stop_after_attempt, wait_fixed
-import hashlib
-import time
+"""Scraper de Slickdeals basado en su feed RSS público.
 
-from .base_scraper import BaseScraper
+La web de Slickdeals responde 403 (Cloudflare) a peticiones automatizadas, pero
+el feed de FeedBurner sigue disponible y entrega las mismas ofertas de portada.
+"""
+
+import logging
+import re
+import xml.etree.ElementTree as ET
+
+import httpx
+from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_fixed
+
+from scrapers.base_scraper import BaseScraper, ScraperError
 from utils.models import Oferta
+
+logger = logging.getLogger(__name__)
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+}
+
 
 class SlickdealsScraper(BaseScraper):
     emoji = "🔥"
@@ -15,58 +32,96 @@ class SlickdealsScraper(BaseScraper):
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
-    async def obtener_ofertas(self) -> List[Oferta]:
-        logging.info(f"Slickdeals: Iniciando scraping desde {self.url}")
-        async with httpx.AsyncClient() as client:
-            response = await client.get(self.url, timeout=30)
-        logging.info(f"Slickdeals: Respuesta obtenida. Código de estado: {response.status_code}")
-        soup = BeautifulSoup(response.content, 'html.parser')
-        ofertas = []
-        
-        for oferta in soup.find_all('div', {'class': 'dealCard__content'}):
-            try:
-                titulo = self.limpiar_texto(oferta.find('a', {'class': 'dealCard__title'}).text)
-                link = 'https://slickdeals.net' + oferta.find('a', {'class': 'dealCard__title'})['href']
-                
-                precio_elem = oferta.find('span', {'class': 'dealCard__price'})
-                precio = self.limpiar_texto(precio_elem.text) if precio_elem else 'No disponible'
-                
-                precio_original_elem = oferta.find('span', {'class': 'dealCard__originalPrice'})
-                precio_original = self.limpiar_texto(precio_original_elem.text) if precio_original_elem else None
-                
-                imagen_elem = oferta.find('img', {'class': 'dealCard__image'})
-                imagen = imagen_elem['src'] if imagen_elem else 'No disponible'
-                
-                # Verificar si es una tarjeta de carga
-                if "loading" in titulo.lower() or "cargando" in titulo.lower():
-                    logging.warning("Se detectó una tarjeta de carga, ignorando...")
-                    continue
-                
-                nueva_oferta = Oferta.create(
-                    titulo=titulo,
-                    precio=precio,
-                    link=link,
-                    tag=self.tag,
-                    emoji=self.emoji,
-                    precio_original=precio_original,
-                    imagen=imagen
-                )
-                
-                ofertas.append(nueva_oferta)
-                logging.info(f"Slickdeals: Oferta procesada: {titulo}")
-            except Exception as e:
-                logging.error(f"Slickdeals: Error al procesar una oferta: {e}", exc_info=True)
-                continue
-        
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(3),
+        reraise=True,
+    )
+    async def obtener_ofertas(self) -> list[Oferta]:
+        logger.info("Slickdeals: descargando feed %s", self.url)
+        try:
+            async with httpx.AsyncClient(
+                headers=HEADERS, follow_redirects=True, timeout=30
+            ) as client:
+                response = await client.get(self.url)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ScraperError(f"Slickdeals no respondió correctamente: {exc}") from exc
+
+        ofertas = self.parsear_feed(response.content)
         if not ofertas:
-            logging.warning(f"Slickdeals: No se encontraron ofertas en {self.url}")
-            return []
+            logger.warning("Slickdeals: el feed no devolvió ofertas utilizables")
         else:
-            logging.info(f"Slickdeals: Se encontraron {len(ofertas)} ofertas en total")
-        
+            logger.info("Slickdeals: %s ofertas desde el feed RSS", len(ofertas))
+        return ofertas
+
+    def parsear_feed(self, contenido: bytes | str) -> list[Oferta]:
+        try:
+            raiz = ET.fromstring(contenido)
+        except ET.ParseError as exc:
+            raise ScraperError(f"Slickdeals: feed RSS inválido: {exc}") from exc
+
+        items = [
+            elemento
+            for elemento in raiz.iter()
+            if elemento.tag.split("}")[-1] == "item"
+        ]
+        if not items:
+            raise ScraperError("Slickdeals: el contenido recibido no es un feed RSS")
+
+        ofertas: list[Oferta] = []
+        vistos: set[str] = set()
+        for item in items:
+            try:
+                oferta = self._extraer_item(item)
+                if oferta and oferta.link not in vistos:
+                    vistos.add(oferta.link)
+                    ofertas.append(oferta)
+            except Exception as exc:  # noqa: BLE001 - una entrada rota no invalida el feed
+                logger.error("Slickdeals: error al procesar una entrada: %s", exc)
         return ofertas
 
     @staticmethod
-    def limpiar_texto(texto: str) -> str:
-        return ' '.join(texto.strip().split())
+    def _texto_hijo(item, nombre: str) -> str:
+        for hijo in item:
+            if hijo.tag.split("}")[-1] == nombre:
+                return (hijo.text or "").strip()
+        return ""
+
+    def _extraer_item(self, item) -> Oferta | None:
+        titulo = self.limpiar_texto(re.sub(r"<[^>]+>", " ", self._texto_hijo(item, "title")))
+        link = self._texto_hijo(item, "link")
+        if not titulo or not link:
+            return None
+
+        descripcion = self.limpiar_texto(
+            re.sub(r"<[^>]+>", " ", self._texto_hijo(item, "description"))
+        )
+        encoded = self._texto_hijo(item, "encoded")
+
+        precio = self.extraer_precio(titulo) or self.extraer_precio(descripcion)
+        original = self.extraer_precio_original(descripcion) or self.extraer_precio_original(titulo)
+        if original and precio and original == precio:
+            original = None
+
+        imagen = None
+        if encoded:
+            soup_img = BeautifulSoup(encoded, "html.parser")
+            img = soup_img.find("img")
+            if img:
+                imagen = img.get("src") or img.get("data-src")
+
+        cupon = self.extraer_cupon(descripcion)
+        info = self.limpiar_info(descripcion)
+
+        return Oferta.create(
+            titulo=titulo,
+            precio=precio or "No disponible",
+            link=link,
+            tag=self.tag,
+            emoji=self.emoji,
+            precio_original=original,
+            imagen=imagen,
+            cupon=cupon,
+            info_cupon=info,
+        )

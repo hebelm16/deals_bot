@@ -1,76 +1,164 @@
+import logging
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on", "t")
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not str(value).strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logging.getLogger("OfertasBot").warning(
+            "Valor no numérico para %s=%r; se usa %s", name, value, default
+        )
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not str(value).strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 class Config:
-    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-    CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
-    DATABASE = os.getenv('DATABASE_NAME', 'ofertas.db')
-    USER_ID = os.getenv('TELEGRAM_USER_ID')
-    OFERTA_COOLDOWN = int(os.getenv('OFERTA_COOLDOWN', 72 * 3600))  # 72 horas por defecto
+    # Telegram
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+    USER_ID = os.getenv("TELEGRAM_USER_ID")
 
-    # Bot settings
-    MAX_OFERTAS_POR_EJECUCION = int(os.getenv('MAX_OFERTAS_POR_EJECUCION', 20))
-    LOOP_INTERVAL_SECONDS = int(os.getenv('LOOP_INTERVAL_SECONDS', 7200)) # 2 horas
-    SEND_OFFER_INTERVAL_SECONDS = int(os.getenv('SEND_OFFER_INTERVAL_SECONDS', 5))
-    SEND_OFFER_MAX_RETRIES = int(os.getenv('SEND_OFFER_MAX_RETRIES', 3))
-    SEND_OFFER_RETRY_SLEEP_SECONDS = int(os.getenv('SEND_OFFER_RETRY_SLEEP_SECONDS', 5))
+    # Persistencia
+    DATABASE = os.getenv("DATABASE") or os.getenv("DATABASE_NAME") or "ofertas.db"
 
-    # Telegram polling settings
-    TELEGRAM_POLLING_TIMEOUT = int(os.getenv('TELEGRAM_POLLING_TIMEOUT', 30))  # segundos
-    TELEGRAM_POLLING_INTERVAL = float(os.getenv('TELEGRAM_POLLING_INTERVAL', 0.0))  # segundos
-    TELEGRAM_NETWORK_RETRY_SLEEP = int(os.getenv('TELEGRAM_NETWORK_RETRY_SLEEP', 5))  # segundos
+    # Ritmo de publicación
+    MAX_OFERTAS_POR_EJECUCION = _env_int("MAX_OFERTAS_POR_EJECUCION", 20)
+    LOOP_INTERVAL_SECONDS = _env_int("LOOP_INTERVAL_SECONDS", 7200)
+    SEND_OFFER_INTERVAL_SECONDS = _env_int("SEND_OFFER_INTERVAL_SECONDS", 8)
+    SEND_OFFER_MAX_RETRIES = _env_int("SEND_OFFER_MAX_RETRIES", 3)
+    SEND_OFFER_RETRY_SLEEP_SECONDS = _env_int("SEND_OFFER_RETRY_SLEEP_SECONDS", 5)
+    CYCLE_TIMEOUT_SECONDS = _env_int("CYCLE_TIMEOUT_SECONDS", 600)
+    SCRAPER_TIMEOUT_SECONDS = _env_int("SCRAPER_TIMEOUT_SECONDS", 60)
 
-    # Webhooks settings
-    USE_WEBHOOKS = os.getenv('USE_WEBHOOKS', 'False').lower() in ('true', '1', 't')
-    WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # ej: https://mi-bot.up.railway.app
-    PORT = int(os.getenv('PORT', 8443))  # Railway asigna esta variable automáticamente
+    # IA
+    GEMINI_API_KEYS = os.getenv("GEMINI_API_KEYS", "")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP", "")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    AI_HOOK_REQUIRED = _env_bool("AI_HOOK_REQUIRED", False)
+    AI_HOOK_TIMEOUT_SECONDS = _env_int("AI_HOOK_TIMEOUT_SECONDS", 45)
 
-    # AI settings
-    GEMINI_API_KEYS = os.getenv('GEMINI_API_KEYS', '')
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_API_KEY_BACKUP = os.getenv('GEMINI_API_KEY_BACKUP', '')
-    GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
+    # Telegram polling / webhook
+    TELEGRAM_POLLING_TIMEOUT = _env_int("TELEGRAM_POLLING_TIMEOUT", 30)
+    TELEGRAM_POLLING_INTERVAL = _env_float("TELEGRAM_POLLING_INTERVAL", 0.0)
+    USE_WEBHOOKS = _env_bool("USE_WEBHOOKS", False)
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+    PORT = _env_int("PORT", 8443)
+    HEALTH_PORT = _env_int("HEALTH_PORT", 0)
 
-    # Database settings
-    DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = int(os.getenv('DIAS_LIMPIEZA_OFERTAS_ANTIGUAS', 30))
+    # Alertas y usuarios
+    MAX_ALERTAS_POR_USUARIO = _env_int("MAX_ALERTAS_POR_USUARIO", 20)
+    KEYWORD_MIN_LENGTH = _env_int("KEYWORD_MIN_LENGTH", 2)
+    KEYWORD_MAX_LENGTH = _env_int("KEYWORD_MAX_LENGTH", 64)
+    ALERT_SEND_INTERVAL_SECONDS = _env_float("ALERT_SEND_INTERVAL_SECONDS", 0.4)
 
-    # Logging settingss
-    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-    LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
-
+    # Operación
+    HEARTBEAT_INTERVAL_SECONDS = _env_int("HEARTBEAT_INTERVAL_SECONDS", 3600)
+    HEARTBEAT_MAX_HOURS = _env_int("HEARTBEAT_MAX_HOURS", 6)
+    DIAS_LIMPIEZA_OFERTAS_ANTIGUAS = _env_int("DIAS_LIMPIEZA_OFERTAS_ANTIGUAS", 30)
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+    LOG_FILE = os.getenv("LOG_FILE", "logs/bot.log")
 
     SCRAPERS = [
         {
             "module": "scrapers.slickdeals_scraper",
             "class": "SlickdealsScraper",
             "name": "slickdeals",
-            "url": os.getenv('SLICKDEALS_URL', 'https://slickdeals.net/'),
+            # Feed RSS público (FeedBurner): la web de Slickdeals responde 403 a bots.
+            "url": os.getenv(
+                "SLICKDEALS_URL", "https://feeds.feedburner.com/SlickdealsnetFP"
+            ),
             "tag": "#Slickdeals",
-            "enabled": True
+            "enabled": True,
         },
         {
             "module": "scrapers.dealnews_scraper",
             "class": "DealsnewsScraper",
             "name": "dealnews",
-            "url": os.getenv('DEALSNEWS_URL', 'https://www.dealnews.com/'),
+            "url": os.getenv("DEALSNEWS_URL", "https://www.dealnews.com/"),
             "tag": "#DealNews",
-            "enabled": True
+            "enabled": True,
         },
         {
             "module": "scrapers.dealsofamerica_scraper",
             "class": "DealsOfAmericaScraper",
             "name": "dealsofamerica",
-            "url": os.getenv('DEALSOFAMERICA_URL', 'https://www.dealsofamerica.com/'),
+            "url": os.getenv("DEALSOFAMERICA_URL", "https://www.dealsofamerica.com/"),
             "tag": "#DealsOfAmerica",
-            "enabled": True
-        }
+            "enabled": True,
+        },
     ]
 
     @classmethod
-    def validate(cls):
-        required_vars = ['TOKEN', 'CHANNEL_ID', 'USER_ID']
-        for var in required_vars:
-            if not getattr(cls, var):
-                raise ValueError(f"La variable de entorno {var} es requerida pero no está configurada.")
+    def gemini_models(cls) -> list[str]:
+        raw = (
+            os.getenv("GEMINI_MODELS")
+            or os.getenv("GEMINI_MODEL")
+            or "gemini-3-flash-preview,gemini-2.5-flash,gemini-2.0-flash"
+        )
+        models = []
+        for model in raw.split(","):
+            model = model.strip()
+            if model and model not in models:
+                models.append(model)
+        return models
+
+    @classmethod
+    def has_ai(cls) -> bool:
+        keys = cls.GEMINI_API_KEYS or cls.GEMINI_API_KEY or cls.GEMINI_API_KEY_BACKUP
+        return bool(keys or cls.GROQ_API_KEY)
+
+    @classmethod
+    def validate(cls) -> None:
+        """Valida la configuración mínima al arrancar y avisa de degradaciones."""
+        missing = [
+            name
+            for name in ("TOKEN", "CHANNEL_ID", "USER_ID")
+            if not getattr(cls, name)
+        ]
+        if missing:
+            raise ValueError(
+                "Faltan variables de entorno obligatorias: " + ", ".join(missing)
+            )
+
+        if cls.USE_WEBHOOKS and not cls.WEBHOOK_URL:
+            raise ValueError("USE_WEBHOOKS=true requiere WEBHOOK_URL")
+
+        if cls.AI_HOOK_REQUIRED and not cls.has_ai():
+            raise ValueError(
+                "AI_HOOK_REQUIRED=true requiere GEMINI_* o GROQ_API_KEY"
+            )
+
+        logger = logging.getLogger("OfertasBot")
+        if not cls.has_ai():
+            logger.warning(
+                "No hay proveedor de IA configurado: las ofertas se publicarán "
+                "con gancho de plantilla. Define GEMINI_API_KEY/GEMINI_API_KEYS "
+                "o GROQ_API_KEY para usar IA."
+            )

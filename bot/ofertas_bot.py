@@ -1,529 +1,725 @@
+"""Orquestador del bot de ofertas."""
+
 import asyncio
-import logging
-from typing import List, Dict, Any, Set
-from telegram import Bot
-from telegram.ext import Application
-from telegram.error import NetworkError, RetryAfter, Conflict, BadRequest, TimedOut
-import random
-import os
-import time
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from filelock import FileLock, Timeout
+import hashlib
+import html
 import importlib
 import inspect
-from tenacity import retry, wait_fixed, stop_after_attempt, retry_if_exception_type
-from playwright.async_api import async_playwright
+import logging
+import os
+import random
+import signal
+import time
+from typing import Any, Dict, List, Optional
 
-from config import Config
-from database.db_manager import DBManager
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import (
+    BadRequest,
+    Conflict,
+    Forbidden,
+    NetworkError,
+    RetryAfter,
+    TimedOut,
+)
+from telegram.ext import Application
+
 from bot.handlers import setup_handlers
+from config import Config
+from database.db_manager import DBManager, canonicalizar_link
+from utils.ai_helper import gancho_respaldo, generar_gancho
+from utils.formatting import (
+    CAPTION_LIMIT,
+    MESSAGE_LIMIT,
+    render_offer_text,
+    texto_plano,
+)
+from utils.health_server import start_health_server
+from utils.keywords import compilar_patron
 from utils.models import Oferta
-from utils.ai_helper import generar_gancho_ia
-import html
-import re
+
+logger = logging.getLogger("OfertasBot")
+
 
 class OfertasBot:
-    def __init__(self):
-        self.config = Config()
-        self.logger = logging.getLogger("OfertasBot")
-        self.db_manager = DBManager(self.config.DATABASE)
-        self.scrapers = self.init_scrapers()
-        self.application = None
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        db_manager: Optional[DBManager] = None,
+        scrapers: Optional[Dict[str, Any]] = None,
+    ):
+        self.config = config or Config()
+        self.db_manager = db_manager or DBManager(self.config.DATABASE)
+        self.scrapers = scrapers if scrapers is not None else self.init_scrapers()
+        self.application: Optional[Application] = None
         self.bot = None
-        self.is_running = True
         self.lock = asyncio.Lock()
-        self.lock_file = "ofertasbot.lock"
-        self.browser = None
-        self.playwright_context = None
+        carpeta_db = os.path.dirname(os.path.abspath(self.config.DATABASE))
+        self.lock_file = os.path.join(carpeta_db, ".ofertasbot.lock")
         self.stop_event = asyncio.Event()
+        self._apagado = False
+        self._health_server = None
+        self._inicio = time.time()
+        self._salud: Dict[str, Any] = {
+            "last_cycle_ts": None,
+            "last_cycle_ok": False,
+            "last_error": None,
+        }
+        self._ultimos_errores_scrapers: Dict[str, str] = {}
 
+    # ------------------------------------------------------------------ arranque
     def init_scrapers(self) -> Dict[str, Any]:
-        scrapers = {}
+        scrapers: Dict[str, Any] = {}
         for scraper_config in self.config.SCRAPERS:
             try:
-                module = importlib.import_module(scraper_config["module"])
-                scraper_class = getattr(module, scraper_config["class"])
-                scraper_instance = scraper_class(
+                modulo = importlib.import_module(scraper_config["module"])
+                clase = getattr(modulo, scraper_config["class"])
+                instancia = clase(
                     name=scraper_config["name"],
                     url=scraper_config["url"],
                     tag=scraper_config["tag"],
                 )
                 scrapers[scraper_config["name"]] = {
-                    "instance": scraper_instance,
-                    "enabled": scraper_config["enabled"]
+                    "instance": instancia,
+                    "enabled": bool(scraper_config.get("enabled", True)),
                 }
-                self.logger.info(f"Scraper '{scraper_config['name']}' cargado exitosamente.")
-            except (ImportError, AttributeError) as e:
-                self.logger.error(
-                    f"No se pudo cargar el scraper '{scraper_config['name']}': {e}",
+                logger.info("Scraper '%s' cargado", scraper_config["name"])
+            except (ImportError, AttributeError, TypeError) as exc:
+                logger.error(
+                    "No se pudo cargar el scraper '%s': %s",
+                    scraper_config.get("name"),
+                    exc,
                     exc_info=True,
                 )
         return scrapers
 
-    async def launch_browser(self):
-        """Lanza el navegador si algún scraper lo necesita."""
-        for scraper_info in self.scrapers.values():
-            if scraper_info["enabled"] and hasattr(scraper_info["instance"], 'launch_browser'):
-                self.logger.info("Lanzando navegador para scrapers dinámicos...")
-                try:
-                    # Asumimos que el primer scraper con `launch_browser` puede lanzar el navegador.
-                    self.playwright_context = await async_playwright().start()
-                    self.browser = await self.playwright_context.chromium.launch(
-                        headless=True,
-                        args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-                    )
-                    self.logger.info("Navegador Playwright lanzado exitosamente.")
-                except Exception as e:
-                    self.logger.error(
-                        f"No se pudo lanzar el navegador Playwright: {e}. "
-                        f"El scraper {scraper_info['instance'].name} será deshabilitado.",
-                        exc_info=True
-                    )
-                    # Deshabilitar este scraper si falla el navegador
-                    scraper_info["enabled"] = False
-                break
+    async def _cargar_estado_fuentes(self) -> None:
+        for nombre, info in self.scrapers.items():
+            guardado = await self.db_manager.get_ajuste(f"fuente.{nombre}.enabled")
+            if guardado is not None:
+                info["enabled"] = guardado == "1"
 
-    async def close_browser(self):
-        """Cierra el navegador si está activo."""
-        if self.browser:
-            try:
-                self.logger.info("Cerrando el navegador Playwright...")
-                await self.browser.close()
-            except Exception as e:
-                self.logger.warning(f"Error al cerrar el navegador: {e}")
-            finally:
-                self.browser = None
-                
-        if self.playwright_context:
-            try:
-                await self.playwright_context.stop()
-            except Exception as e:
-                self.logger.warning(f"Error al detener el contexto de Playwright: {e}")
-            finally:
-                self.playwright_context = None
+    async def _guardar_estado_fuente(self, nombre: str, habilitada: bool) -> None:
+        if nombre not in self.scrapers:
+            return
+        self.scrapers[nombre]["enabled"] = habilitada
+        await self.db_manager.set_ajuste(
+            f"fuente.{nombre}.enabled", "1" if habilitada else "0"
+        )
 
     async def run(self) -> None:
+        lock = FileLock(self.lock_file, timeout=0)
         try:
-            lock = FileLock(self.lock_file, timeout=0)
             with lock:
-                self.logger.info("Bloqueo adquirido exitosamente.")
+                logger.info("Bloqueo adquirido en %s", self.lock_file)
                 await self.db_manager.init_db()
+                await self._cargar_estado_fuentes()
+                await self._iniciar_aplicacion()
+                await self._iniciar_red()
+                self._instalar_senales()
+                self._iniciar_health_server()
 
-                # Crear application con timeout robusto
-                self.application = (
-                    Application.builder()
-                    .token(self.config.TOKEN)
-                    .build()
+                logger.info(
+                    "Ciclo de scraping cada %ss (primera ejecución inmediata)",
+                    self.config.LOOP_INTERVAL_SECONDS,
                 )
-                self.bot = Bot(self.config.TOKEN)
-                self.application.bot_data["bot"] = self
-                setup_handlers(self.application, self)
-                await self.application.initialize()
-                await self.application.start()
-                
-                # Configurar menú de comandos
-                try:
-                    comandos = [
-                        BotCommand("start", "Muestra el mensaje de bienvenida y ayuda"),
-                        BotCommand("ayuda", "Muestra los comandos disponibles"),
-                        BotCommand("alerta", "Crea una alerta para una palabra clave"),
-                        BotCommand("mis_alertas", "Mira a qué palabras estás suscrito"),
-                        BotCommand("borrar_alerta", "Elimina una alerta existente"),
-                        BotCommand("estado", "Ver estado de los scrapers (Admin)"),
-                    ]
-                    await self.bot.set_my_commands(comandos)
-                    self.logger.info("Comandos de Telegram configurados en el menú.")
-                except Exception as e:
-                    self.logger.error(f"No se pudieron configurar los comandos: {e}")
-                
-                # Usar polling o webhooks según configuración
-                try:
-                    if self.config.USE_WEBHOOKS and self.config.WEBHOOK_URL:
-                        self.logger.info(f"Iniciando en modo WEBHOOK en el puerto {self.config.PORT}")
-                        # El webhook URL path por defecto es el token
-                        webhook_path = f"/{self.config.TOKEN}"
-                        full_webhook_url = f"{self.config.WEBHOOK_URL.rstrip('/')}{webhook_path}"
-                        
-                        await self.application.updater.start_webhook(
-                            listen="0.0.0.0",
-                            port=self.config.PORT,
-                            webhook_url=full_webhook_url,
-                            url_path=webhook_path
-                        )
-                    else:
-                        self.logger.info("Iniciando en modo POLLING")
-                        # Por si acaso había un webhook configurado antes, lo borramos
-                        await self.application.bot.delete_webhook(drop_pending_updates=True)
-                        
-                        await self.application.updater.start_polling(
-                            drop_pending_updates=True,
-                            error_callback=self._telegram_error_callback,
-                            timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
-                            poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
-                        )
-                except Exception as net_startup_error:
-                    self.logger.error(f"Error al iniciar red de Telegram: {net_startup_error}", exc_info=True)
-                    raise
-
-                self.logger.info("Añadiendo tarea de scraping a JobQueue.")
                 self.application.job_queue.run_repeating(
                     self.scheduled_check_ofertas,
                     interval=self.config.LOOP_INTERVAL_SECONDS,
-                    first=1
+                    first=1,
+                    name="ciclo_ofertas",
                 )
-
-                # Mantener vivo el programa hasta recibir señal de parada
+                self.application.job_queue.run_repeating(
+                    self._tarea_heartbeat,
+                    interval=self.config.HEARTBEAT_INTERVAL_SECONDS,
+                    first=30,
+                    name="heartbeat",
+                )
                 await self.stop_event.wait()
-
-                await self.application.stop()
-                await self.application.shutdown()
-        except Timeout:
-            self.logger.error("Otra instancia del bot ya está en ejecución. Saliendo.")
-            return
-        except Exception as e:
-            self.logger.critical(f"Error fatal al iniciar el bot: {e}", exc_info=True)
+        except FileLockTimeout:
+            logger.error(
+                "Otra instancia del bot ya está en ejecución (bloqueo %s). Saliendo.",
+                self.lock_file,
+            )
+        except asyncio.CancelledError:
+            logger.info("Ejecución cancelada; cerrando ordenadamente")
+        except Exception as exc:  # noqa: BLE001 - se registra y se intenta cerrar
+            logger.critical("Error fatal al iniciar el bot: %s", exc, exc_info=True)
         finally:
-            await self.close_browser()  # Asegurarse de cerrar el navegador
-            self.logger.info("El bot se ha detenido.")
+            await self._apagar()
 
-    def _telegram_error_callback(self, context) -> None:
-        """Maneja errores de Telegram durante el polling. NO es async."""
+    async def _iniciar_aplicacion(self) -> None:
+        self.application = Application.builder().token(self.config.TOKEN).build()
+        if self.application.job_queue is None:
+            raise RuntimeError(
+                "Falta el extra job-queue de python-telegram-bot. "
+                "Instala 'python-telegram-bot[job-queue]'."
+            )
+        self.bot = self.application.bot
+        self.application.bot_data["bot"] = self
+        setup_handlers(self.application, self)
+        await self.application.initialize()
+        await self.application.start()
+
+        comandos = [
+            BotCommand("start", "Mensaje de bienvenida y ayuda"),
+            BotCommand("ayuda", "Muestra los comandos disponibles"),
+            BotCommand("alerta", "Crea una alerta para una palabra clave"),
+            BotCommand("mis_alertas", "Mira tus palabras suscritas"),
+            BotCommand("borrar_alerta", "Elimina una alerta existente"),
+            BotCommand("estado", "Estado de fuentes y ciclo (Admin)"),
+            BotCommand("diagnostico", "Diagnóstico técnico (Admin)"),
+        ]
         try:
-            error_msg = str(context.error) if hasattr(context, 'error') else str(context)
-            self.logger.error(f"Error de Telegram: {error_msg}")
-            
-            if hasattr(context, 'error'):
-                if isinstance(context.error, NetworkError):
-                    self.logger.warning("Error de red detectado. El bot intentará reconectarse automáticamente.")
-                elif isinstance(context.error, TimedOut):
-                    self.logger.warning("Timeout de Telegram. El bot intentará reconectarse automáticamente.")
-                elif isinstance(context.error, Conflict):
-                    self.logger.warning("Conflicto: Otra instancia del bot está activa. El bot se reconectará.")
-        except Exception as e:
-            self.logger.error(f"Error al manejar error de Telegram: {e}")
+            await self.bot.set_my_commands(comandos)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("No se pudieron configurar los comandos: %s", exc)
+
+    async def _iniciar_red(self) -> None:
+        if self.config.USE_WEBHOOKS and self.config.WEBHOOK_URL:
+            secreto = self.config.WEBHOOK_SECRET or hashlib.sha256(
+                self.config.TOKEN.encode()
+            ).hexdigest()[:32]
+            url_webhook = f"{self.config.WEBHOOK_URL}/webhook"
+            logger.info("Iniciando en modo webhook en el puerto %s", self.config.PORT)
+            await self.application.updater.start_webhook(
+                listen="0.0.0.0",
+                port=self.config.PORT,
+                url_path="webhook",
+                webhook_url=url_webhook,
+                secret_token=secreto,
+                drop_pending_updates=False,
+            )
+        else:
+            logger.info("Iniciando en modo polling")
+            await self.bot.delete_webhook(drop_pending_updates=False)
+            await self.application.updater.start_polling(
+                drop_pending_updates=False,
+                error_callback=self._telegram_error_callback,
+                timeout=self.config.TELEGRAM_POLLING_TIMEOUT,
+                poll_interval=self.config.TELEGRAM_POLLING_INTERVAL,
+            )
+
+    def _instalar_senales(self) -> None:
+        loop = asyncio.get_running_loop()
+
+        def solicitar_parada(*_args) -> None:
+            if not self.stop_event.is_set():
+                logger.info("Señal de parada recibida; cerrando el bot")
+                self.stop_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, solicitar_parada)
+            except (NotImplementedError, RuntimeError):
+                try:
+                    signal.signal(sig, lambda *_: loop.call_soon_threadsafe(solicitar_parada))
+                except ValueError:
+                    logger.debug("No se pudo instalar el handler de %s", sig)
+
+    def _iniciar_health_server(self) -> None:
+        if self.config.HEALTH_PORT <= 0:
+            return
+        try:
+            self._health_server = start_health_server(
+                self.config.HEALTH_PORT, self.health_snapshot
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("No se pudo arrancar el servidor de salud: %s", exc)
+
+    async def _apagar(self) -> None:
+        if self._apagado:
+            return
+        self._apagado = True
+        if self._health_server is not None:
+            try:
+                self._health_server.shutdown()
+                self._health_server.server_close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error al cerrar el servidor de salud: %s", exc)
+        if self.application is not None:
+            try:
+                await self.application.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error al detener la aplicación: %s", exc)
+            try:
+                await self.application.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error al apagar la aplicación: %s", exc)
+        logger.info("El bot se ha detenido")
 
     async def stop(self) -> None:
-        self.is_running = False
         self.stop_event.set()
-        if self.application:
-            await self.application.stop()
-            await self.application.shutdown()
 
-    async def _scrape_all_sources(self) -> Dict[str, List[Oferta]]:
-        """Ejecuta todos los scrapers habilitados de forma concurrente y devuelve sus resultados."""
-        scraped_deals = {name: [] for name, scraper_info in self.scrapers.items() if scraper_info["enabled"]}
-        self.logger.info("Iniciando scraping concurrente de todas las fuentes habilitadas.")
-        
-        enabled_scrapers = [scraper_info["instance"] for scraper_info in self.scrapers.values() if scraper_info["enabled"]]
-        tasks = []
-        for scraper in enabled_scrapers:
-            method = scraper.obtener_ofertas
-            is_async = inspect.iscoroutinefunction(method)
-            
-            # Inspeccionar la firma del método para ver si necesita el navegador
-            sig = inspect.signature(method)
-            if 'browser' in sig.parameters:
-                if not self.browser:
-                    self.logger.error(f"El scraper {scraper.name} necesita un navegador, pero no hay uno activo.")
-                    continue
-                if is_async:
-                    coro = method(self.browser)
-                else:
-                    coro = asyncio.to_thread(method, self.browser)
-            else:
-                if is_async:
-                    coro = method()
-                else:
-                    coro = asyncio.to_thread(method)
-            
-            async def run_with_timeout(s_name, c):
-                try:
-                    return await asyncio.wait_for(c, timeout=60.0)
-                except asyncio.TimeoutError:
-                    self.logger.error(f"Scraper '{s_name}' excedió el tiempo límite de 60s y fue cancelado.")
-                    return []
-                except Exception as e:
-                    self.logger.error(f"Error al ejecutar scraper '{s_name}': {e}", exc_info=True)
-                    return []
-
-            tasks.append(run_with_timeout(scraper.name, coro))
-        
-        if not tasks:
-            self.logger.warning("No hay tareas de scraping para ejecutar.")
-            return scraped_deals
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        self.logger.info("Scraping concurrente finalizado.")
-
-        for i, result in enumerate(results):
-            scraper = enabled_scrapers[i]
-            if isinstance(result, Exception):
-                self.logger.error(f"Error al obtener ofertas de {scraper.name}: {result}", exc_info=result)
-            elif isinstance(result, list):
-                self.logger.info(f"Se obtuvieron {len(result)} ofertas de {scraper.name}")
-                scraped_deals[scraper.name] = result
-        
-        return scraped_deals
-
-    async def _filter_new_deals(self, all_deals: Dict[str, List[Oferta]]) -> Dict[str, List[Oferta]]:
-        """Filtra las ofertas para quedarse solo con las que no están en la base de datos."""
-        self.logger.info("Optimizando la verificación de duplicados...")
-        recent_ids = await self.db_manager.obtener_ids_recientes()
-        self.logger.info(f"Cargados {len(recent_ids)} IDs de ofertas recientes para verificación.")
-
-        def is_new(deal: Oferta) -> bool:
-            deal_id = self.db_manager.generar_id_oferta(deal)
-            return deal_id not in recent_ids
-
-        new_deals_by_source = {
-            name: [deal for deal in deals if is_new(deal)]
-            for name, deals in all_deals.items()
+    def health_snapshot(self) -> Dict[str, Any]:
+        ultimo = self._salud.get("last_cycle_ts")
+        edad = int(time.time() - ultimo) if ultimo else None
+        en_arranque = ultimo is None and (time.time() - self._inicio) < 900
+        ok = bool(self._salud.get("last_cycle_ok")) and edad is not None and (
+            edad < self.config.HEARTBEAT_MAX_HOURS * 3600
+        )
+        return {
+            "ok": ok or en_arranque,
+            "last_cycle_ts": ultimo,
+            "age_seconds": edad,
+            "last_error": self._salud.get("last_error"),
+            "sources": {
+                nombre: bool(info["enabled"]) for nombre, info in self.scrapers.items()
+            },
         }
 
-        for name, deals in new_deals_by_source.items():
-            self.logger.info(f"Nuevas ofertas de {name}: {len(deals)}")
-            
-        return new_deals_by_source
+    # ------------------------------------------------------------------ scraping
+    async def _scrape_all_sources(self) -> Dict[str, List[Oferta]]:
+        habilitados = [
+            (nombre, info["instance"])
+            for nombre, info in self.scrapers.items()
+            if info["enabled"]
+        ]
+        if not habilitados:
+            logger.warning("No hay scrapers habilitados")
+            return {}
 
-    async def _process_new_deals(self, new_deals_by_source: Dict[str, List[Oferta]]) -> int:
-        """Selecciona, envía y guarda las nuevas ofertas."""
-        deals_to_send = self.seleccionar_ofertas_equilibradas(
-            *[deals for deals in new_deals_by_source.values()]
-        )
-        self.logger.info(f"Total de ofertas a enviar: {len(deals_to_send)}")
+        tareas: Dict[str, asyncio.Future] = {}
+        for nombre, scraper in habilitados:
+            metodo = scraper.obtener_ofertas
+            corrutina = (
+                metodo() if inspect.iscoroutinefunction(metodo) else asyncio.to_thread(metodo)
+            )
+            tareas[nombre] = asyncio.wait_for(
+                corrutina, timeout=self.config.SCRAPER_TIMEOUT_SECONDS
+            )
 
-        # Obtener todas las suscripciones activas
-        suscripciones = await self.db_manager.obtener_todas_las_suscripciones()
+        resultados = await asyncio.gather(*tareas.values(), return_exceptions=True)
+        ofertas: Dict[str, List[Oferta]] = {}
+        self._ultimos_errores_scrapers = {}
 
-        sent_deals_count = 0
-        for deal in deals_to_send:
-            # Generar gancho de IA con paciencia (timeout de 75s para permitir reintentos/rotación)
-            gancho = None
-            try:
-                gancho = await asyncio.wait_for(
-                    generar_gancho_ia(deal.titulo, deal.precio, deal.precio_original),
-                    timeout=75.0
-                )
-            except asyncio.TimeoutError:
-                self.logger.warning(f"Timeout al generar gancho IA para '{deal.titulo}'.")
-            except Exception as e:
-                self.logger.warning(f"Error al generar gancho IA: {e}")
-
-            # REGLA ESTRICTA: Solo publicar si tiene gancho de IA generado
-            if not gancho:
-                self.logger.warning(
-                    f"Oferta omitida: '{deal.titulo}'. No se generó gancho IA. "
-                    "Se reintentará en el próximo ciclo para asegurar que todas las ofertas salgan con gancho."
-                )
+        for (nombre, _), resultado in zip(tareas.items(), resultados, strict=True):
+            if isinstance(resultado, Exception):
+                self._ultimos_errores_scrapers[nombre] = str(resultado)[:250]
+                logger.error("Error en scraper '%s': %s", nombre, resultado)
                 continue
+            if not resultado:
+                self._ultimos_errores_scrapers[nombre] = "0 ofertas"
+                logger.warning("Scraper '%s' no devolvió ofertas", nombre)
+                continue
+            ofertas[nombre] = resultado
+            logger.info("Scraper '%s': %s ofertas", nombre, len(resultado))
+        return ofertas
 
-            deal.gancho_ia = gancho
+    async def _filter_new_deals(
+        self, all_deals: Dict[str, List[Oferta]]
+    ) -> Dict[str, List[Oferta]]:
+        ids_conocidos, canonicos = await self.db_manager.obtener_indices_existentes()
+        logger.info(
+            "Deduplicación contra %s IDs y %s URLs canónicas",
+            len(ids_conocidos),
+            len(canonicos),
+        )
 
-            if await self.enviar_oferta_con_reintento(deal):
-                await self.db_manager.guardar_oferta(deal)
-                sent_deals_count += 1
-                self.logger.info(f"Oferta enviada y guardada: {deal.titulo} - Fuente: {deal.tag}")
-                
-                # Enviar alertas a los usuarios suscritos
-                for sub in suscripciones:
-                    # Buscar coincidencia de palabra clave con regex para palabras completas
-                    match = False
-                    keyword_pattern = r'\b' + re.escape(sub['keyword'].lower()) + r'\b'
-                    
-                    if re.search(keyword_pattern, deal.titulo.lower()):
-                        match = True
-                    elif deal.info_cupon and re.search(keyword_pattern, deal.info_cupon.lower()):
-                        match = True
-                        
-                    if match:
-                        try:
-                            mensaje_formateado = self.formatear_mensaje_oferta(deal)
-                            mensaje_dm = f"🔔 <b>¡ALERTA DE PALABRA CLAVE: {sub['keyword']}!</b> 🔔\n\n" + mensaje_formateado["text"]
-                            if deal.imagen and deal.imagen != 'No disponible':
-                                await self.bot.send_photo(
-                                    chat_id=sub['chat_id'],
-                                    photo=deal.imagen,
-                                    caption=mensaje_dm,
-                                    reply_markup=mensaje_formateado["reply_markup"],
-                                    parse_mode="HTML"
-                                )
-                            else:
-                                await self.bot.send_message(
-                                    chat_id=sub['chat_id'],
-                                    text=mensaje_dm,
-                                    reply_markup=mensaje_formateado["reply_markup"],
-                                    parse_mode="HTML"
-                                )
-                            self.logger.info(f"Alerta enviada a {sub['chat_id']} por la palabra {sub['keyword']}")
-                            await asyncio.sleep(0.5)  # Prevenir rate limiting
-                        except Exception as e:
-                            self.logger.error(f"Error al enviar alerta a {sub['chat_id']}: {e}")
+        def es_nueva(oferta: Oferta) -> bool:
+            if any(
+                oferta_id in ids_conocidos
+                for oferta_id in self.db_manager.generar_ids_oferta(oferta)
+            ):
+                return False
+            return canonicalizar_link(oferta.link) not in canonicos
 
-            else:
-                self.logger.error(f"No se pudo enviar la oferta después de varios intentos: {deal.titulo}")
-            
-            # Pausa para proteger cuotas de rate-limit de Telegram y de la IA
-            await asyncio.sleep(max(self.config.SEND_OFFER_INTERVAL_SECONDS, 8))
-        
-        return sent_deals_count
+        return {
+            nombre: [oferta for oferta in ofertas if es_nueva(oferta)]
+            for nombre, ofertas in all_deals.items()
+        }
 
-    async def scheduled_check_ofertas(self, context) -> None:
-        try:
-            # Timeout de seguridad global para toda la ejecución del ciclo (10 minutos máx)
-            await asyncio.wait_for(self.check_ofertas(), timeout=600.0)
-        except asyncio.TimeoutError:
-            self.logger.error("El ciclo programado de check_ofertas excedió el tiempo límite de 10 minutos.")
-        except (NetworkError, TimedOut) as net_error:
-            self.logger.warning(f"Error de red temporal en scraping: {net_error}")
-        except Exception as e:
-            self.logger.error(f"Error en el ciclo principal: {e}", exc_info=True)
-            await self.enviar_notificacion_error(e)
-
-    async def check_ofertas(self) -> None:
-        """
-        Orquesta el proceso completo de buscar, filtrar, enviar y limpiar ofertas.
-        """
-        async with self.lock:
-            await self.launch_browser()
-            try:
-                # 1. Scrape all sources
-                scraped_deals = await self._scrape_all_sources()
-                
-                # 2. Filter for new deals
-                new_deals = await self._filter_new_deals(scraped_deals)
-                
-                # 3. Process and send new deals
-                sent_count = await self._process_new_deals(new_deals)
-                
-                # 4. Clean up old deals from the database
-                cleaned_count = await self.db_manager.limpiar_ofertas_antiguas(
-                    dias=self.config.DIAS_LIMPIEZA_OFERTAS_ANTIGUAS
-                )
-                
-                # 5. Log summary
-                self.logger.info("Resumen de ejecución:")
-                self.logger.info(f"  - Ofertas enviadas en esta ejecución: {sent_count}")
-                self.logger.info(f"  - Ofertas antiguas eliminadas: {cleaned_count}")
-            finally:
-                await self.close_browser()
-
+    # ------------------------------------------------------------------ publicación
     def seleccionar_ofertas_equilibradas(
         self, *listas_de_ofertas: List[List[Oferta]]
     ) -> List[Oferta]:
-        
-        ofertas_seleccionadas = []
         listas_no_vacias = [lista for lista in listas_de_ofertas if lista]
-        
         if not listas_no_vacias:
             return []
 
         max_ofertas = self.config.MAX_OFERTAS_POR_EJECUCION
-        num_fuentes = len(listas_no_vacias)
-        
-        # Iteradores para cada lista de ofertas
         iteradores = [iter(lista) for lista in listas_no_vacias]
-        
-        while len(ofertas_seleccionadas) < max_ofertas:
-            ofertas_agregadas_en_ciclo = 0
-            for i in range(num_fuentes):
+        seleccionadas: List[Oferta] = []
+        vistos: set[tuple[str, str]] = set()
+
+        while len(seleccionadas) < max_ofertas:
+            agregadas = 0
+            for iterador in iteradores:
                 try:
-                    oferta = next(iteradores[i])
-                    if oferta not in ofertas_seleccionadas:
-                        ofertas_seleccionadas.append(oferta)
-                        ofertas_agregadas_en_ciclo += 1
-                        if len(ofertas_seleccionadas) == max_ofertas:
-                            break
+                    oferta = next(iterador)
                 except StopIteration:
-                    # Esta fuente no tiene más ofertas
                     continue
-            
-            if ofertas_agregadas_en_ciclo == 0:
-                # No hay más ofertas nuevas en ninguna fuente
+                clave = (oferta.titulo or "", oferta.link or "")
+                if clave in vistos:
+                    continue
+                vistos.add(clave)
+                seleccionadas.append(oferta)
+                agregadas += 1
+                if len(seleccionadas) == max_ofertas:
+                    break
+            if agregadas == 0:
                 break
-        
-        random.shuffle(ofertas_seleccionadas)
-        return ofertas_seleccionadas
-        
-    async def enviar_oferta_con_reintento(self, oferta: Oferta) -> bool:
-        for intento in range(self.config.SEND_OFFER_MAX_RETRIES):
+
+        random.shuffle(seleccionadas)
+        return seleccionadas
+
+    async def _generar_gancho(self, oferta: Oferta) -> Optional[str]:
+        try:
+            gancho = await asyncio.wait_for(
+                generar_gancho(
+                    oferta.titulo,
+                    oferta.precio,
+                    oferta.precio_original,
+                    requerido=self.config.AI_HOOK_REQUIRED,
+                ),
+                timeout=self.config.AI_HOOK_TIMEOUT_SECONDS,
+            )
+            return gancho
+        except asyncio.TimeoutError:
+            logger.warning("Timeout generando gancho para '%s'", oferta.titulo)
+            return (
+                None
+                if self.config.AI_HOOK_REQUIRED
+                else gancho_respaldo(
+                    oferta.titulo, oferta.precio, oferta.precio_original
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error generando gancho: %s", exc)
+            return (
+                None
+                if self.config.AI_HOOK_REQUIRED
+                else gancho_respaldo(
+                    oferta.titulo, oferta.precio, oferta.precio_original
+                )
+            )
+
+    async def _process_new_deals(
+        self,
+        new_deals_by_source: Dict[str, List[Oferta]],
+        deadline: Optional[float] = None,
+    ) -> int:
+        seleccionadas = self.seleccionar_ofertas_equilibradas(
+            *[ofertas for ofertas in new_deals_by_source.values()]
+        )
+        logger.info("Ofertas seleccionadas para publicar: %s", len(seleccionadas))
+        if not seleccionadas:
+            return 0
+
+        suscripciones = await self.db_manager.obtener_todas_las_suscripciones()
+        patrones = []
+        for suscripcion in suscripciones:
             try:
-                mensaje_formateado = self.formatear_mensaje_oferta(oferta)
-                if oferta.imagen and oferta.imagen != 'No disponible':
-                    await self.bot.send_photo(
-                        chat_id=self.config.CHANNEL_ID, 
-                        photo=oferta.imagen, 
-                        caption=mensaje_formateado["text"], 
-                        reply_markup=mensaje_formateado["reply_markup"],
-                        parse_mode=mensaje_formateado["parse_mode"]
-                    )
-                else:
-                    await self.bot.send_message(
-                        chat_id=self.config.CHANNEL_ID, 
-                        text=mensaje_formateado["text"], 
-                        reply_markup=mensaje_formateado["reply_markup"],
-                        parse_mode=mensaje_formateado["parse_mode"]
-                    )
-                return True
-            except RetryAfter as e:
-                retry_time = int(e.retry_after) + 1
-                self.logger.warning(f"Límite de velocidad alcanzado. Esperando {retry_time} segundos.")
-                await asyncio.sleep(retry_time)
-            except (NetworkError, Conflict) as e:
-                self.logger.error(f"Error al enviar oferta (intento {intento + 1}/{self.config.SEND_OFFER_MAX_RETRIES}): {e}")
-                if intento < self.config.SEND_OFFER_MAX_RETRIES - 1:
-                    await asyncio.sleep(self.config.SEND_OFFER_RETRY_SLEEP_SECONDS * (intento + 1))
-            except Exception as e:
-                self.logger.error(f"Error inesperado al enviar oferta '{oferta.titulo}': {e}", exc_info=True)
-                return False
-        return False
+                patrones.append(
+                    (suscripcion, compilar_patron(suscripcion["keyword"]))
+                )
+            except ValueError:
+                logger.warning(
+                    "Suscripción con palabra clave inválida ignorada: %r",
+                    suscripcion["keyword"],
+                )
 
-    def formatear_mensaje_oferta(self, oferta: Oferta) -> Dict[str, Any]:
-        """Formatea el mensaje de la oferta y crea el teclado inline."""
-        
-        texto = ""
-        if oferta.gancho_ia:
-            gancho_seguro = html.escape(oferta.gancho_ia)
-            texto += f"<i>{gancho_seguro}</i>\n\n"
-            
-        texto += f"{oferta.emoji} <b>{oferta.titulo}</b>\n\n"
-        texto += f"💰 <b>Precio:</b> {oferta.precio}\n"
-        if oferta.precio_original and oferta.precio_original != "No disponible":
-            texto += f"📉 <b>Antes:</b> <s>{oferta.precio_original}</s>\n"
-        if oferta.info_cupon:
-            texto += f"🎟️ <b>Info Extra:</b> {oferta.info_cupon}\n"
-        if oferta.cupon:
-            texto += f"✂️ <b>Cupón:</b> <code>{oferta.cupon}</code>\n"
-        
-        texto += f"\n🔗 <a href='{oferta.link}'>Ir a la Oferta</a>\n"
-        texto += f"\n🏷️ {oferta.tag}"
-        
-        keyboard = [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=oferta.link)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        enviadas = 0
+        for oferta in seleccionadas:
+            if deadline is not None and time.monotonic() > deadline:
+                logger.warning("Presupuesto del ciclo agotado; quedan ofertas sin publicar")
+                break
 
-        return {
-            "text": texto,
-            "reply_markup": reply_markup,
-            "parse_mode": 'HTML'
-        }
+            gancho = await self._generar_gancho(oferta)
+            if not gancho and self.config.AI_HOOK_REQUIRED:
+                logger.warning(
+                    "Oferta omitida por falta de gancho IA (regla estricta): %s",
+                    oferta.titulo,
+                )
+                continue
+            oferta.gancho_ia = gancho
 
-    async def enviar_notificacion_error(self, error: Exception) -> None:
-        mensaje = f"🚨 <b>Error en el bot de ofertas</b> 🚨\n\n"
-        mensaje += f"Detalles del error:\n"
-        mensaje += f"<code>{type(error).__name__}</code>: <code>{str(error)}</code>"
+            try:
+                oferta_id = await self.db_manager.guardar_oferta(
+                    oferta, estado="pendiente"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("No se pudo guardar la oferta antes de enviar: %s", exc)
+                continue
+
+            message_id = await self.enviar_oferta_con_reintento(oferta)
+            if not message_id:
+                await self.db_manager.marcar_oferta_fallida(oferta_id)
+                logger.error("No se pudo enviar la oferta: %s", oferta.titulo)
+                continue
+
+            await self.db_manager.marcar_oferta_enviada(oferta_id, message_id)
+            enviadas += 1
+            logger.info("Oferta publicada: %s (%s)", oferta.titulo, oferta.tag)
+            await self._enviar_alertas(oferta, patrones)
+            await asyncio.sleep(max(1, self.config.SEND_OFFER_INTERVAL_SECONDS))
+        return enviadas
+
+    def _teclado(self, oferta: Oferta) -> Optional[InlineKeyboardMarkup]:
+        link = (oferta.link or "").strip()
+        if not link.startswith(("http://", "https://")):
+            return None
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔗 Ver Oferta 🔗", url=link)]]
+        )
+
+    @staticmethod
+    def _imagen_valida(oferta: Oferta) -> bool:
+        imagen = (oferta.imagen or "").strip()
+        return imagen.startswith(("http://", "https://"))
+
+    async def _enviar_mensaje(
+        self,
+        chat_id: str | int,
+        oferta: Oferta,
+        caption: str,
+        mensaje: str,
+        teclado: Optional[InlineKeyboardMarkup],
+        usar_foto: bool,
+    ):
+        if usar_foto:
+            try:
+                return await self.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=oferta.imagen,
+                    caption=caption,
+                    reply_markup=teclado,
+                    parse_mode="HTML",
+                )
+            except BadRequest as exc:
+                logger.warning("Foto rechazada (%s); se envía como texto", exc)
+
+        try:
+            return await self.bot.send_message(
+                chat_id=chat_id,
+                text=mensaje,
+                reply_markup=teclado,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except BadRequest as exc:
+            logger.warning("HTML rechazado (%s); se envía como texto plano", exc)
+            return await self.bot.send_message(
+                chat_id=chat_id,
+                text=texto_plano(mensaje),
+                reply_markup=teclado,
+                parse_mode=None,
+                disable_web_page_preview=True,
+            )
+
+    async def enviar_oferta_con_reintento(self, oferta: Oferta) -> Optional[int]:
+        caption = render_offer_text(oferta, limit=CAPTION_LIMIT)
+        mensaje = render_offer_text(oferta, limit=MESSAGE_LIMIT)
+        teclado = self._teclado(oferta)
+        usar_foto = self._imagen_valida(oferta)
+
+        for intento in range(max(1, self.config.SEND_OFFER_MAX_RETRIES)):
+            try:
+                enviado = await self._enviar_mensaje(
+                    self.config.CHANNEL_ID,
+                    oferta,
+                    caption,
+                    mensaje,
+                    teclado,
+                    usar_foto,
+                )
+                return enviado.message_id
+            except RetryAfter as exc:
+                espera = int(getattr(exc, "retry_after", 5)) + 1
+                logger.warning("Límite de Telegram; esperando %ss", espera)
+                await asyncio.sleep(espera)
+            except (NetworkError, TimedOut, Conflict) as exc:
+                logger.error(
+                    "Error de red al enviar (intento %s/%s): %s",
+                    intento + 1,
+                    self.config.SEND_OFFER_MAX_RETRIES,
+                    exc,
+                )
+                await asyncio.sleep(
+                    self.config.SEND_OFFER_RETRY_SLEEP_SECONDS * (intento + 1)
+                )
+            except Forbidden as exc:
+                logger.critical("El bot no tiene permiso en el canal: %s", exc)
+                return None
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Error inesperado al enviar '%s': %s",
+                    oferta.titulo,
+                    exc,
+                    exc_info=True,
+                )
+                return None
+        return None
+
+    async def _enviar_alertas(
+        self, oferta: Oferta, patrones: List[tuple[Dict[str, str], Any]]
+    ) -> None:
+        if not patrones:
+            return
+        titulo = (oferta.titulo or "").lower()
+        info = (oferta.info_cupon or "").lower()
+        teclado = self._teclado(oferta)
+        usar_foto = self._imagen_valida(oferta)
+
+        for suscripcion, patron in patrones:
+            if not (patron.search(titulo) or patron.search(info)):
+                continue
+            prefijo = (
+                f"🔔 <b>Alerta: {html.escape(suscripcion['keyword'], quote=False)}</b>\n\n"
+            )
+            caption = prefijo + render_offer_text(
+                oferta, limit=max(200, 1000 - len(prefijo))
+            )
+            mensaje = prefijo + render_offer_text(
+                oferta, limit=max(300, 4000 - len(prefijo))
+            )
+            try:
+                await self._enviar_mensaje(
+                    suscripcion["chat_id"],
+                    oferta,
+                    caption,
+                    mensaje,
+                    teclado,
+                    usar_foto,
+                )
+                logger.info(
+                    "Alerta enviada a %s por '%s'",
+                    suscripcion["chat_id"],
+                    suscripcion["keyword"],
+                )
+            except Forbidden:
+                eliminadas = await self.db_manager.eliminar_suscripciones_por_chat(
+                    suscripcion["chat_id"]
+                )
+                logger.info(
+                    "Usuario %s bloqueó el bot; %s suscripciones eliminadas",
+                    suscripcion["chat_id"],
+                    eliminadas,
+                )
+                continue
+            except RetryAfter as exc:
+                await asyncio.sleep(int(getattr(exc, "retry_after", 5)) + 1)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Error enviando alerta a %s: %s", suscripcion["chat_id"], exc
+                )
+            await asyncio.sleep(max(0.2, self.config.ALERT_SEND_INTERVAL_SECONDS))
+
+    # ------------------------------------------------------------------ ciclo
+    async def scheduled_check_ofertas(self, context=None) -> None:
+        try:
+            await asyncio.wait_for(
+                self.check_ofertas(), timeout=self.config.CYCLE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            logger.error("El ciclo excedió el tiempo límite de %ss", self.config.CYCLE_TIMEOUT_SECONDS)
+            await self._registrar_fallo_ciclo("timeout del ciclo")
+        except (NetworkError, TimedOut) as exc:
+            logger.warning("Error de red temporal en el ciclo: %s", exc)
+            await self._registrar_fallo_ciclo(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error en el ciclo principal: %s", exc, exc_info=True)
+            await self._registrar_fallo_ciclo(str(exc))
+
+    async def _registrar_fallo_ciclo(self, detalle: str) -> None:
+        self._salud["last_cycle_ok"] = False
+        self._salud["last_error"] = detalle[:250]
+        try:
+            await self.db_manager.marcar_ciclo(False, detalle)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("No se pudo registrar el fallo del ciclo: %s", exc)
+        await self.enviar_notificacion_error(RuntimeError(detalle))
+
+    async def check_ofertas(self) -> None:
+        inicio = time.monotonic()
+        deadline = inicio + max(30, self.config.CYCLE_TIMEOUT_SECONDS - 30)
+        async with self.lock:
+            try:
+                scraped = await self._scrape_all_sources()
+                nuevas = await self._filter_new_deals(scraped)
+                enviadas = await self._process_new_deals(nuevas, deadline=deadline)
+                limpiadas = await self.db_manager.limpiar_ofertas_antiguas(
+                    dias=self.config.DIAS_LIMPIEZA_OFERTAS_ANTIGUAS
+                )
+            except Exception as exc:
+                self._salud["last_cycle_ok"] = False
+                self._salud["last_error"] = str(exc)[:250]
+                raise
+
+            total_nuevas = sum(len(ofertas) for ofertas in nuevas.values())
+            detalle = (
+                f"nuevas={total_nuevas} enviadas={enviadas} limpiadas={limpiadas}"
+            )
+            self._salud["last_cycle_ts"] = int(time.time())
+            self._salud["last_cycle_ok"] = True
+            self._salud["last_error"] = None
+            await self.db_manager.marcar_ciclo(True, detalle)
+            logger.info("Resumen del ciclo: %s", detalle)
+
+    async def _tarea_heartbeat(self, context=None) -> None:
+        try:
+            ultimo_ok = await self.db_manager.get_ajuste("ultimo_ciclo_ok")
+            if not ultimo_ok:
+                return
+            ahora = time.time()
+            if ahora - int(ultimo_ok) <= self.config.HEARTBEAT_MAX_HOURS * 3600:
+                return
+            ultima_alerta = await self.db_manager.get_ajuste("ultima_alerta_heartbeat")
+            if ultima_alerta and ahora - int(ultima_alerta) < self.config.HEARTBEAT_INTERVAL_SECONDS:
+                return
+            fecha = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ultimo_ok)))
+            await self.enviar_mensaje_admin(
+                "⚠️ <b>Bot sin ciclos exitosos</b>\n\n"
+                f"Último ciclo correcto: <code>{fecha}</code>.\n"
+                "Revisa Railway (logs, volumen y variables de entorno)."
+            )
+            await self.db_manager.set_ajuste(
+                "ultima_alerta_heartbeat", str(int(ahora))
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error en el heartbeat: %s", exc)
+
+    # ------------------------------------------------------------------ avisos
+    async def enviar_mensaje_admin(self, texto: str) -> None:
+        if not self.config.USER_ID or not self.bot:
+            logger.warning("No hay administrador configurado para enviar el aviso")
+            return
         try:
             await self.bot.send_message(
-                chat_id=self.config.CHANNEL_ID, text=mensaje, parse_mode="HTML"
+                chat_id=self.config.USER_ID,
+                text=texto[:MESSAGE_LIMIT],
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
-        except Exception as e:
-            self.logger.error(
-                f"No se pudo enviar notificación de error: {e}", exc_info=True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("No se pudo enviar el aviso al administrador: %s", exc)
+
+    async def enviar_notificacion_error(self, error: Exception) -> None:
+        detalle = html.escape(f"{type(error).__name__}: {error}"[:800], quote=False)
+        await self.enviar_mensaje_admin(
+            "🚨 <b>Error en el bot de ofertas</b>\n\n"
+            f"<code>{detalle}</code>"
+        )
+
+    # ------------------------------------------------------------------ compatibilidad
+    def formatear_mensaje_oferta(self, oferta: Oferta) -> Dict[str, Any]:
+        return {
+            "text": render_offer_text(oferta, limit=CAPTION_LIMIT),
+            "reply_markup": self._teclado(oferta),
+            "parse_mode": "HTML",
+        }
+
+    def _telegram_error_callback(self, error: Exception) -> None:
+        if isinstance(error, RetryAfter):
+            logger.warning(
+                "Telegram pidió esperar %ss", getattr(error, "retry_after", "?")
             )
-
-
-def main():
-    bot = OfertasBot()
-    asyncio.run(bot.run())
-
-
-if __name__ == "__main__":
-    main()
+        elif isinstance(error, Conflict):
+            logger.warning(
+                "Conflicto de instancias: otra instancia está usando getUpdates"
+            )
+        elif isinstance(error, (NetworkError, TimedOut)):
+            logger.warning("Error de red de Telegram: %s", error)
+        else:
+            logger.error("Error de Telegram: %s", error)

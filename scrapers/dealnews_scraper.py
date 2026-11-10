@@ -1,15 +1,27 @@
-import logging
-from bs4 import BeautifulSoup
-import httpx
-from typing import List, Dict, Any, Optional
-from tenacity import retry, stop_after_attempt, wait_fixed
-import hashlib
-import time
-import re
-import random
+"""Scraper de DealNews (HTML)."""
 
-from .base_scraper import BaseScraper
+import logging
+from typing import List, Optional
+from urllib.parse import urljoin
+
+import httpx
+from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_fixed
+
+from scrapers.base_scraper import BaseScraper, ScraperError
 from utils.models import Oferta
+
+logger = logging.getLogger(__name__)
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 
 class DealsnewsScraper(BaseScraper):
     emoji = "📰"
@@ -17,110 +29,98 @@ class DealsnewsScraper(BaseScraper):
     def __init__(self, name: str, url: str, tag: str):
         super().__init__(name, url, tag)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(3), reraise=True)
     async def obtener_ofertas(self) -> List[Oferta]:
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
-        ]
-        headers = {'User-Agent': random.choice(user_agents)}
+        logger.info("DealNews: iniciando scraping desde %s", self.url)
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(self.url, headers=headers, timeout=30)
+            async with httpx.AsyncClient(
+                headers=HEADERS, follow_redirects=True, timeout=30
+            ) as client:
+                response = await client.get(self.url)
             response.raise_for_status()
-            logging.info(f"DealNews: Respuesta obtenida. Código de estado: {response.status_code}")
-        except httpx.RequestError as e:
-            logging.error(f"DealNews: Error al obtener la página: {e}")
-            return []
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        ofertas = []
-        
-        secciones_oferta = soup.find_all('div', class_='flex-cell flex-cell-size-1of1')
-        logging.info(f"DealNews: Se encontraron {len(secciones_oferta)} secciones de oferta")
-        
-        for i, seccion in enumerate(secciones_oferta):
-            logging.debug(f"DealNews: Procesando sección de oferta {i+1}")
+        except httpx.HTTPError as exc:
+            raise ScraperError(f"DealNews no respondió correctamente: {exc}") from exc
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        secciones = soup.find_all("div", class_="flex-cell flex-cell-size-1of1")
+        logger.info("DealNews: %s secciones de oferta", len(secciones))
+
+        ofertas: List[Oferta] = []
+        for indice, seccion in enumerate(secciones, start=1):
             try:
                 oferta = self.extraer_oferta(seccion)
                 if oferta:
                     ofertas.append(oferta)
-                    logging.info(f"DealNews: Oferta procesada: {oferta.titulo}")
                 else:
-                    logging.warning(f"DealNews: No se pudo extraer oferta de la sección {i+1}")
-            except Exception as e:
-                logging.error(f"DealNews: Error al procesar una oferta: {e}", exc_info=True)
-        
+                    logger.debug("DealNews: sección %s sin datos completos", indice)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("DealNews: error al procesar una oferta: %s", exc)
+
         if not ofertas:
-            logging.warning(f"DealNews: No se encontraron ofertas en {self.url}")
+            logger.warning("DealNews: no se encontraron ofertas en %s", self.url)
         else:
-            logging.info(f"DealNews: Se encontraron {len(ofertas)} ofertas en total")
-        
+            logger.info("DealNews: %s ofertas encontradas", len(ofertas))
         return ofertas
 
     def extraer_oferta(self, seccion) -> Optional[Oferta]:
-        oferta = {}
-        
-        titulo = seccion.find('div', class_='title limit-height limit-height-large-2 limit-height-small-2')
-        oferta['titulo'] = self.limpiar_texto(titulo.text) if titulo else None
-        logging.debug(f"DealNews: Título encontrado: {oferta['titulo']}")
-        
-        precio_elem = seccion.find('div', class_='callout limit-height limit-height-large-1 limit-height-small-1')
-        if precio_elem:
-            precio_texto = precio_elem.get_text(strip=True)
-            precio_match = re.search(r'\$\d+(?:\.\d+)?', precio_texto)
-            if precio_match:
-                oferta['precio'] = precio_match.group()
-            else:
-                oferta['precio'] = self.limpiar_texto(precio_texto)
-            
-            precio_original_elem = precio_elem.find('span', class_='callout-comparison')
-            if precio_original_elem:
-                oferta['precio_original'] = self.limpiar_texto(precio_original_elem.text)
-            else:
-                oferta['precio_original'] = None
-        else:
-            oferta['precio'] = 'No disponible'
-            oferta['precio_original'] = None
-        
-        logging.debug(f"DealNews: Precio encontrado: {oferta['precio']}")
-        logging.debug(f"DealNews: Precio original encontrado: {oferta['precio_original']}")
-        
-        imagen = seccion.find('img', class_='native-lazy-img')
-        oferta['imagen'] = imagen['src'] if imagen and 'src' in imagen.attrs else None
-        logging.debug(f"DealNews: Imagen encontrada: {oferta['imagen']}")
-        
-        enlace = seccion.find('a', class_='attractor')
-        oferta['link'] = enlace['href'] if enlace and 'href' in enlace.attrs else None
-        logging.debug(f"DealNews: Enlace encontrado: {oferta['link']}")
-        
-        info_elem = seccion.find('div', class_='snippet summary')
-        if info_elem:
-            oferta['info_cupon'] = self.limpiar_texto(info_elem.text)
-            cupon_matches = re.findall(r'"([^"]*)"', oferta['info_cupon'])
-            oferta['cupon'] = cupon_matches[-1] if cupon_matches else None
-        else:
-            oferta['info_cupon'] = "No se requiere cupón"
-            oferta['cupon'] = None
-        logging.debug(f"DealNews: Info/Cupón encontrado: {oferta['info_cupon']}")
-        
-        if all([oferta.get('titulo'), oferta.get('precio'), oferta.get('link')]):
-            return Oferta.create(
-                titulo=oferta['titulo'],
-                precio=oferta['precio'],
-                link=oferta['link'],
-                tag=self.tag,
-                emoji=self.emoji,
-                precio_original=oferta.get('precio_original'),
-                imagen=oferta.get('imagen'),
-                cupon=oferta.get('cupon'),
-                info_cupon=oferta.get('info_cupon')
-            )
-        else:
-            logging.warning("DealNews: Oferta incompleta ignorada")
+        titulo_el = seccion.find(
+            "div", class_="title limit-height limit-height-large-2 limit-height-small-2"
+        )
+        if not titulo_el:
+            titulo_el = seccion.find("div", class_="title")
+        titulo = self.limpiar_texto(titulo_el.get_text()) if titulo_el else ""
+        if not titulo:
             return None
 
-    @staticmethod
-    def limpiar_texto(texto: str) -> str:
-        return ' '.join(texto.strip().split())
+        precio_el = seccion.find(
+            "div", class_="callout limit-height limit-height-large-1 limit-height-small-1"
+        )
+        precio: Optional[str] = None
+        precio_original: Optional[str] = None
+        if precio_el:
+            texto_precio = precio_el.get_text(strip=True)
+            precio = self.extraer_precio(texto_precio)
+            original_el = precio_el.find("span", class_="callout-comparison")
+            if original_el:
+                precio_original = self.extraer_precio_original(original_el.get_text())
+                if not precio_original:
+                    precio_original = self.extraer_precio(original_el.get_text())
+            if not precio:
+                return None
+        else:
+            return None
+
+        if precio_original and precio_original == precio:
+            precio_original = None
+
+        enlace = seccion.find("a", class_="attractor")
+        link = enlace.get("href") if enlace else None
+        if not link:
+            return None
+        link = urljoin(self.url, link)
+
+        imagen = None
+        img = seccion.find("img", class_="native-lazy-img") or seccion.find("img")
+        if img:
+            imagen = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+
+        info: Optional[str] = None
+        cupon: Optional[str] = None
+        info_el = seccion.find("div", class_="snippet summary")
+        if info_el:
+            texto_info = self.limpiar_texto(info_el.get_text(" ", strip=True))
+            cupon = self.extraer_cupon(texto_info)
+            if texto_info and "no se requiere cupón" not in texto_info.lower():
+                info = self.limpiar_info(texto_info)
+
+        return Oferta.create(
+            titulo=titulo,
+            precio=precio or "No disponible",
+            link=link,
+            tag=self.tag,
+            emoji=self.emoji,
+            precio_original=precio_original,
+            imagen=imagen,
+            cupon=cupon,
+            info_cupon=info,
+        )

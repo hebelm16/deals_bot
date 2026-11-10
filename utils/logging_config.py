@@ -1,38 +1,39 @@
 import logging
-from logging.handlers import RotatingFileHandler
-import sys
 import os
+import sys
+from logging.handlers import RotatingFileHandler
 
-def setup_logging(config):
+
+def setup_logging(config) -> None:
+    """Configura logging a fichero rotativo y consola respetando LOG_LEVEL."""
     log_dir = os.path.dirname(config.LOG_FILE)
-    if log_dir and not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
 
-    file_handler = RotatingFileHandler(config.LOG_FILE, maxBytes=5000000, backupCount=5)
-    console_handler = logging.StreamHandler(sys.stdout)
-
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    file_handler = RotatingFileHandler(
+        config.LOG_FILE,
+        maxBytes=5_000_000,
+        backupCount=5,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
     root_logger.setLevel(config.LOG_LEVEL)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
-    # Reducir la verbosidad de los logs de bibliotecas externas
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('telegram').setLevel(logging.WARNING)
-    logging.getLogger('httpx').setLevel(logging.WARNING)
-    logging.getLogger('httpcore').setLevel(logging.WARNING)
-    
-    # Configurar el logger principal del bot
-    bot_logger = logging.getLogger('OfertasBot')
-    bot_logger.setLevel(logging.DEBUG)
+    # Menos ruido de bibliotecas externas.
+    for nombre in ("urllib3", "telegram", "httpx", "httpcore", "apscheduler"):
+        logging.getLogger(nombre).setLevel(logging.WARNING)
 
-    # Filtro personalizado para reducir los warnings de timestamp inválidos
-    class TimestampFilter(logging.Filter):
-        def filter(self, record):
-            return "Timestamp inválido" not in record.getMessage()
-
-    bot_logger.addFilter(TimestampFilter())
+    # El logger del bot respeta el nivel configurado (antes se forzaba DEBUG).
+    logging.getLogger("OfertasBot").setLevel(config.LOG_LEVEL)

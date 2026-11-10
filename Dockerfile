@@ -1,20 +1,41 @@
-# Usar imagen de Playwright 1.40.0 con Python 3.10 (estable)
-# IMPORTANTE: Los navegadores en esta imagen están compilados para Playwright 1.40.0
-# Por eso es crítico que requirements.txt especifique playwright==1.40.0
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# Imagen mínima: los scrapers usan HTTP + BeautifulSoup, no un navegador.
+FROM python:3.12-slim
 
-# Establecer el directorio de trabajo dentro del contenedor
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
-# Copiar primero el archivo de requerimientos para aprovechar el cache de Docker
-COPY requirements.txt .
+# gosu permite preparar el volumen como root y ejecutar la app como usuario sin privilegios.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
 
-# Instalar las dependencias de Python
-# IMPORTANTE: NO actualizar Playwright, la versión 1.40.0 está fija en requirements.txt
+RUN useradd --create-home --uid 10001 app
+
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el resto de los archivos de tu proyecto al contenedor
-COPY . .
+COPY main.py config.py ./
+COPY bot ./bot
+COPY database ./database
+COPY scrapers ./scrapers
+COPY utils ./utils
+COPY scripts ./scripts
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# El comando para ejecutar el bot. Esto reemplaza al Procfile.
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && mkdir -p /data /app/logs \
+    && chown -R app:app /app /data
+
+# Railway monta aquí el volumen persistente.
+ENV DATABASE=/data/ofertas.db
+
+EXPOSE 8443
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=90s --retries=3 \
+    CMD ["python", "scripts/healthcheck.py"]
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "main.py"]

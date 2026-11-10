@@ -1,6 +1,7 @@
+import time
 from dataclasses import dataclass
 from typing import Optional
-import time
+
 
 @dataclass
 class Oferta:
@@ -28,6 +29,7 @@ class Oferta:
             precio_original=kwargs.get('precio_original'),
             imagen=kwargs.get('imagen'),
             cupon=kwargs.get('cupon'),
+            gancho_ia=kwargs.get('gancho_ia'),
             info_cupon=kwargs.get('info_cupon'),
             emoji=emoji
         )
