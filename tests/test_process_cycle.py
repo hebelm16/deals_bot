@@ -90,6 +90,7 @@ async def test_segundo_ciclo_no_duplica(tmp_path, monkeypatch):
     config = Config()
     config.CHANNEL_ID = "canal"
     config.SEND_OFFER_INTERVAL_SECONDS = 0
+    config.DESCARGAR_IMAGENES = False
     bot = OfertasBot(config=config, db_manager=db, scrapers={})
     bot.bot = FakeBot()
 
@@ -103,6 +104,40 @@ async def test_segundo_ciclo_no_duplica(tmp_path, monkeypatch):
     await bot._process_new_deals({"test": [oferta]})
     nuevas = await bot._filter_new_deals({"test": [oferta]})
     assert nuevas["test"] == []
+
+
+async def test_guarda_duplicados_entre_fuentes(tmp_path, monkeypatch):
+    _sin_ia(monkeypatch)
+    db = DBManager(str(tmp_path / "ciclo3.db"))
+    await db.init_db()
+
+    config = Config()
+    config.CHANNEL_ID = "canal"
+    config.SEND_OFFER_INTERVAL_SECONDS = 0
+    config.DESCARGAR_IMAGENES = False
+    bot = OfertasBot(config=config, db_manager=db, scrapers={})
+    bot.bot = FakeBot()
+
+    original = Oferta.create(
+        titulo="Apple AirPods Pro 3 Wireless Earbuds",
+        precio="$50",
+        precio_original="$100",
+        link="https://example.com/airpods",
+        tag="#Test",
+    )
+    duplicada = Oferta.create(
+        titulo="Refurb Apple AirPods Pro 3 Wireless Earbuds",
+        precio="$55",
+        precio_original="$100",
+        link="https://example.com/airpods-refurb",
+        tag="#Test",
+    )
+
+    enviadas = await bot._process_new_deals({"test": [original, duplicada]})
+
+    assert enviadas == 1
+    stats = await db.estadisticas()
+    assert stats["duplicadas"] == 1
 
 
 def test_render_no_excede_caption():

@@ -5,6 +5,8 @@ from utils.scoring import (
     parsear_precio,
     puntuar_oferta,
     seleccionar_mejores,
+    similitud_titulos,
+    son_duplicados,
 )
 
 
@@ -65,3 +67,29 @@ def test_no_duplica_ofertas():
     oferta = crear("$50", "$100")
     seleccion = seleccionar_mejores({"a": [oferta], "b": [oferta]}, maximo=5)
     assert len(seleccion) == 1
+
+
+def test_detecta_duplicados_entre_fuentes():
+    assert son_duplicados(
+        "Apple AirPods Pro 3 Wireless Earbuds",
+        "Refurb: Apple AirPods Pro 3 Wireless Earbuds",
+    )
+    assert not son_duplicados("Apple AirPods Pro 3", "Apple AirPods Pro 2")
+    assert not son_duplicados(
+        "Samsung 75-inch 4K Smart TV", "Samsung 65-inch 4K Smart TV"
+    )
+    assert similitud_titulos("Sony WH-1000XM5", "Sony WH-1000XM5") > 0.9
+
+
+def test_seleccion_evita_duplicados_similares():
+    primera = crear("$50", "$100", titulo="Apple AirPods Pro 3 Wireless Earbuds")
+    duplicada = crear("$55", "$100", titulo="Refurb Apple AirPods Pro 3 Wireless Earbuds")
+    distinta = crear("$30", "$60", titulo="Samsung 75-inch 4K Smart TV")
+
+    seleccion = seleccionar_mejores(
+        {"slickdeals": [primera, duplicada], "dealnews": [distinta]}, maximo=3
+    )
+
+    assert primera in seleccion
+    assert duplicada not in seleccion
+    assert distinta in seleccion

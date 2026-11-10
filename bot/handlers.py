@@ -105,7 +105,8 @@ async def obtener_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lineas.append("<b>Datos:</b>")
     lineas.append(
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']} · "
-        f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']}"
+        f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']} · "
+        f"Duplicadas: {stats.get('duplicadas', 0)}"
     )
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
 
@@ -135,7 +136,8 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"Gancho IA obligatorio: <b>{'sí' if config.AI_HOOK_REQUIRED else 'no'}</b>",
         f"Base de datos: <code>{html.escape(os.path.abspath(config.DATABASE))}</code>",
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']}",
-        f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']}",
+        f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']} · "
+        f"Duplicadas: {stats.get('duplicadas', 0)}",
         "Imágenes: "
         f"URL {imagenes.get('url', 0)} · descargadas {imagenes.get('descargada', 0)} · "
         f"respaldo {imagenes.get('placeholder', 0)} · texto {imagenes.get('texto', 0)}",

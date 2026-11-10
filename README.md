@@ -8,6 +8,8 @@ a los usuarios suscritos a palabras clave.
 
 - Rastrea Slickdeals (feed RSS), DealNews y DealsOfAmerica cada 2 horas.
 - Deduplica por enlace canónico y por hash, incluyendo ofertas históricas.
+- Detecta el mismo producto entre fuentes por similitud de título, se queda con
+  la mejor oferta y marca las demás como duplicadas.
 - Puntúa las ofertas por descuento real, calidad de los datos y frescura, y
   elige las mejores manteniendo variedad entre fuentes.
 - Genera un gancho con Gemini (rotación de claves y descubrimiento automático de

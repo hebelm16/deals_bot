@@ -39,7 +39,7 @@ from utils.health_server import start_health_server
 from utils.images import ImagenDescargada, resolver_imagen
 from utils.keywords import compilar_patron
 from utils.models import Oferta
-from utils.scoring import seleccionar_mejores
+from utils.scoring import seleccionar_mejores, son_duplicados
 
 logger = logging.getLogger("OfertasBot")
 
@@ -357,8 +357,43 @@ class OfertasBot:
         self, ofertas_por_fuente: Dict[str, List[Oferta]]
     ) -> List[Oferta]:
         return seleccionar_mejores(
-            ofertas_por_fuente, self.config.MAX_OFERTAS_POR_EJECUCION
+            ofertas_por_fuente,
+            self.config.MAX_OFERTAS_POR_EJECUCION,
+            umbral_titulos=self.config.SIMILITUD_TITULOS_MINIMA,
         )
+
+    async def _guardar_duplicados(
+        self,
+        ofertas_por_fuente: Dict[str, List[Oferta]],
+        seleccionadas: List[Oferta],
+    ) -> int:
+        """Marca como duplicadas las ofertas equivalentes a una ya elegida."""
+        ids_seleccionadas = {id(oferta) for oferta in seleccionadas}
+        guardadas = 0
+        for ofertas in ofertas_por_fuente.values():
+            for oferta in ofertas:
+                if id(oferta) in ids_seleccionadas:
+                    continue
+                if any(
+                    son_duplicados(
+                        oferta.titulo,
+                        elegida.titulo,
+                        self.config.SIMILITUD_TITULOS_MINIMA,
+                    )
+                    for elegida in seleccionadas
+                ):
+                    try:
+                        await self.db_manager.guardar_oferta(
+                            oferta, estado="duplicada"
+                        )
+                        guardadas += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "No se pudo guardar la oferta duplicada: %s", exc
+                        )
+        if guardadas:
+            logger.info("Ofertas marcadas como duplicadas: %s", guardadas)
+        return guardadas
 
     def seleccionar_ofertas_equilibradas(
         self, *listas_de_ofertas: List[List[Oferta]]
@@ -412,6 +447,7 @@ class OfertasBot:
         logger.info("Ofertas seleccionadas para publicar: %s", len(seleccionadas))
         if not seleccionadas:
             return 0
+        await self._guardar_duplicados(new_deals_by_source, seleccionadas)
 
         suscripciones = await self.db_manager.obtener_todas_las_suscripciones()
         patrones = []

@@ -2,11 +2,45 @@
 
 import math
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence
 
 from utils.models import Oferta
 
 PRECIO_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)")
+
+PALABRAS_VACIAS = {
+    "the",
+    "and",
+    "with",
+    "for",
+    "from",
+    "your",
+    "you",
+    "this",
+    "that",
+    "new",
+    "sale",
+    "deal",
+    "deals",
+    "free",
+    "shipping",
+    "pack",
+    "set",
+    "pcs",
+    "piece",
+    "pieces",
+    "inch",
+    "inches",
+    "color",
+    "colors",
+    "size",
+    "sizes",
+    "refurb",
+    "refurbished",
+    "renewed",
+}
 
 # Peso pequeño por fuente: sirve para desempatar, no para tapar el descuento.
 PESOS_FUENTE = {
@@ -14,6 +48,55 @@ PESOS_FUENTE = {
     "dealnews": 1.0,
     "dealsofamerica": 0.9,
 }
+
+
+def normalizar_titulo(titulo: object) -> str:
+    """Minúsculas, sin acentos ni signos, para comparar títulos."""
+    texto = unicodedata.normalize("NFKD", str(titulo or ""))
+    texto = texto.encode("ascii", "ignore").decode("ascii").lower()
+    return " ".join(re.findall(r"[a-z0-9]+", texto))
+
+
+def _tokens_titulo(titulo: object) -> set[str]:
+    return {
+        token
+        for token in normalizar_titulo(titulo).split()
+        if len(token) > 2 and token not in PALABRAS_VACIAS
+    }
+
+
+def _numeros_titulo(titulo: object) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"\d+[a-z0-9]*", normalizar_titulo(titulo))
+        if token
+    }
+
+
+def similitud_titulos(a: object, b: object) -> float:
+    """Similitud 0..1 entre dos títulos, penalizando modelos distintos."""
+    tokens_a = _tokens_titulo(a)
+    tokens_b = _tokens_titulo(b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+
+    numeros_a = _numeros_titulo(a)
+    numeros_b = _numeros_titulo(b)
+    if numeros_a and numeros_b and not (
+        numeros_a <= numeros_b or numeros_b <= numeros_a
+    ):
+        # Un portátil de 15" no es el mismo producto que uno de 16".
+        return 0.0
+
+    jaccard = len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+    ratio = SequenceMatcher(
+        None, normalizar_titulo(a), normalizar_titulo(b)
+    ).ratio()
+    return max(jaccard, ratio)
+
+
+def son_duplicados(a: object, b: object, umbral: float = 0.82) -> bool:
+    return similitud_titulos(a, b) >= umbral
 
 
 def parsear_precio(valor: object) -> Optional[float]:
@@ -73,6 +156,7 @@ def seleccionar_mejores(
     ofertas_por_fuente: Dict[str, Sequence[Oferta]],
     maximo: int,
     pesos: Optional[Dict[str, float]] = None,
+    umbral_titulos: float = 0.82,
 ) -> List[Oferta]:
     """
     Elige las mejores ofertas por puntuación, con cuota inicial por fuente
@@ -106,6 +190,11 @@ def seleccionar_mejores(
     def agregar(nombre: str, oferta: Oferta) -> bool:
         clave = ((oferta.titulo or "").strip().lower(), (oferta.link or "").strip())
         if clave in vistos:
+            return False
+        if any(
+            son_duplicados(oferta.titulo, existente.titulo, umbral_titulos)
+            for existente in seleccionadas
+        ):
             return False
         vistos.add(clave)
         seleccionadas.append(oferta)
