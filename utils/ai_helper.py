@@ -376,7 +376,13 @@ def _limpiar_titulo_es(texto: Optional[str], original: str) -> Optional[str]:
         return None
     # Marca, modelo, capacidad y cantidades no se pueden perder ni inventar.
     base = limpiar_titulo(original)
-    if not _numeros(base) <= _numeros(limpio):
+    faltantes = _numeros(base) - _numeros(limpio)
+    if faltantes:
+        logger.info(
+            "Título traducido descartado (faltan números %s): %r",
+            sorted(faltantes),
+            limpio,
+        )
         return None
     return limpio
 
@@ -404,6 +410,11 @@ def parsear_publicacion(
     if not gancho:
         return None
     return Publicacion(_limpiar_titulo_es(titulo_raw, original), gancho)
+
+
+def limpiar_cache_ia() -> None:
+    """Vacía la caché de resultados de IA (útil para pruebas manuales)."""
+    _cache.clear()
 
 
 def _prompt_oferta(titulo: str, precio: str, original: Optional[str]) -> str:

@@ -12,6 +12,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from utils.ai_helper import (
     estado_ia,
     generar_publicacion_ia,
+    limpiar_cache_ia,
     modelos_gemini_descubiertos,
 )
 from utils.keywords import normalizar_keyword
@@ -215,11 +216,11 @@ async def test_ia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Probando IA, espera unos segundos…")
     inicio = time.monotonic()
     resultado = None
+    limpiar_cache_ia()  # que la prueba llame de verdad a la IA
     try:
         resultado = await asyncio.wait_for(
             generar_publicacion_ia(
-                f"Sony WH-1000XM5 Wireless Noise Cancelling Headphones "
-                f"#{int(time.time())} $248.00",
+                "Sony WH-1000XM5 Wireless Noise Cancelling Headphones $248.00",
                 "$248.00",
                 "$399.99",
             ),
