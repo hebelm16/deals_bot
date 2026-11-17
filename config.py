@@ -48,6 +48,9 @@ class Config:
     # Ritmo de publicación
     MAX_OFERTAS_POR_EJECUCION = _env_int("MAX_OFERTAS_POR_EJECUCION", 20)
     SIMILITUD_TITULOS_MINIMA = _env_float("SIMILITUD_TITULOS_MINIMA", 0.82)
+    # Ofertas que no son productos: viajes, puntos, finanzas, gift_cards.
+    # Vacío desactiva el filtro.
+    CATEGORIAS_EXCLUIDAS = os.getenv("CATEGORIAS_EXCLUIDAS", "viajes,puntos,finanzas")
     LOOP_INTERVAL_SECONDS = _env_int("LOOP_INTERVAL_SECONDS", 7200)
     SEND_OFFER_INTERVAL_SECONDS = _env_int("SEND_OFFER_INTERVAL_SECONDS", 8)
     SEND_OFFER_MAX_RETRIES = _env_int("SEND_OFFER_MAX_RETRIES", 3)

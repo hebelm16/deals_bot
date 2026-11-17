@@ -466,6 +466,7 @@ class DBManager:
                 "pendientes": "SELECT COUNT(*) FROM ofertas WHERE estado = 'pendiente'",
                 "fallidas": "SELECT COUNT(*) FROM ofertas WHERE estado = 'fallida'",
                 "duplicadas": "SELECT COUNT(*) FROM ofertas WHERE estado = 'duplicada'",
+                "excluidas": "SELECT COUNT(*) FROM ofertas WHERE estado = 'excluida'",
             }.items():
                 cursor = await conn.execute(consulta)
                 fila = await cursor.fetchone()

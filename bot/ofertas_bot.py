@@ -29,6 +29,7 @@ from bot.handlers import setup_handlers
 from config import Config
 from database.db_manager import DBManager, canonicalizar_link
 from utils.ai_helper import gancho_respaldo, generar_gancho, registrar_error_ia
+from utils.filters import categoria_no_producto, parsear_categorias
 from utils.formatting import (
     CAPTION_LIMIT,
     MESSAGE_LIMIT,
@@ -347,10 +348,34 @@ class OfertasBot:
                 return False
             return canonicalizar_link(oferta.link) not in canonicos
 
-        return {
-            nombre: [oferta for oferta in ofertas if es_nueva(oferta)]
-            for nombre, ofertas in all_deals.items()
-        }
+        categorias = parsear_categorias(
+            getattr(self.config, "CATEGORIAS_EXCLUIDAS", None)
+        )
+        resultado: Dict[str, List[Oferta]] = {}
+        excluidas = 0
+        for nombre, ofertas in all_deals.items():
+            aceptadas: List[Oferta] = []
+            for oferta in ofertas:
+                if not es_nueva(oferta):
+                    continue
+                categoria = categoria_no_producto(oferta, categorias)
+                if categoria:
+                    excluidas += 1
+                    logger.info(
+                        "Oferta excluida (%s): %s", categoria, oferta.titulo
+                    )
+                    try:
+                        await self.db_manager.guardar_oferta(
+                            oferta, estado="excluida"
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("No se pudo guardar la oferta excluida: %s", exc)
+                    continue
+                aceptadas.append(oferta)
+            resultado[nombre] = aceptadas
+        if excluidas:
+            logger.info("Ofertas excluidas por no ser productos: %s", excluidas)
+        return resultado
 
     # ------------------------------------------------------------------ publicación
     def _seleccionar_ofertas(
