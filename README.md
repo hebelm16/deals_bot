@@ -21,6 +21,11 @@ a los usuarios suscritos a palabras clave.
   ninguna oferta salga sin foto.
 - Limpia los títulos (quita precio/shipping repetido) y resume la información
   extra a etiquetas cortas: envío gratis, pickup o cupón en la página.
+- Una sola llamada de IA devuelve el título en español y el gancho. Si el
+  título traducido pierde números (modelo, capacidad, medidas) o llega cortado,
+  se publica el título original limpio. Marcas y modelos no se traducen.
+- Filtra ofertas que no son productos (viajes, puntos, finanzas) con
+  `CATEGORIAS_EXCLUIDAS`.
 - Escapa todo el HTML y recorta los mensajes a los límites de Telegram.
 - Envía alertas por palabra clave y permite borrarlas o darse de baja.
 - Guarda las ofertas como pendientes antes de enviarlas para evitar duplicados.

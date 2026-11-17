@@ -11,7 +11,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from utils.ai_helper import (
     estado_ia,
-    generar_gancho_ia,
+    generar_publicacion_ia,
     modelos_gemini_descubiertos,
 )
 from utils.keywords import normalizar_keyword
@@ -217,8 +217,11 @@ async def test_ia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     resultado = None
     try:
         resultado = await asyncio.wait_for(
-            generar_gancho_ia(
-                f"Prueba de conexión {int(time.time())}", "$10.00", "$20.00"
+            generar_publicacion_ia(
+                f"Sony WH-1000XM5 Wireless Noise Cancelling Headphones "
+                f"#{int(time.time())} $248.00",
+                "$248.00",
+                "$399.99",
             ),
             timeout=config.AI_HOOK_TIMEOUT_SECONDS + 15,
         )
@@ -231,7 +234,8 @@ async def test_ia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "✅ <b>IA funcionando</b>",
             f"Tiempo: {int((time.monotonic() - inicio) * 1000)} ms",
             f"Proveedor: <code>{html.escape(str(estado['ultimo_proveedor']))}</code>",
-            f"Gancho: <i>{html.escape(resultado)}</i>",
+            f"Título: <code>{html.escape(resultado.titulo_es or '(sin traducir)')}</code>",
+            f"Gancho: <i>{html.escape(resultado.gancho)}</i>",
         ]
         if estado["ultimo_error"]:
             lineas_resultado.append(

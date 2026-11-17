@@ -28,7 +28,12 @@ from telegram.ext import Application
 from bot.handlers import setup_handlers
 from config import Config
 from database.db_manager import DBManager, canonicalizar_link
-from utils.ai_helper import gancho_respaldo, generar_gancho, registrar_error_ia
+from utils.ai_helper import (
+    Publicacion,
+    gancho_respaldo,
+    generar_publicacion,
+    registrar_error_ia,
+)
 from utils.filters import categoria_no_producto, parsear_categorias
 from utils.formatting import (
     CAPTION_LIMIT,
@@ -431,10 +436,15 @@ class OfertasBot:
         }
         return self._seleccionar_ofertas(por_fuente)
 
-    async def _generar_gancho(self, oferta: Oferta) -> Optional[str]:
+    async def _generar_gancho(self, oferta: Oferta) -> Optional[Publicacion]:
+        """Título en español + gancho en una sola llamada de IA."""
+        respaldo = Publicacion(
+            None,
+            gancho_respaldo(oferta.titulo, oferta.precio, oferta.precio_original),
+        )
         try:
-            gancho = await asyncio.wait_for(
-                generar_gancho(
+            return await asyncio.wait_for(
+                generar_publicacion(
                     oferta.titulo,
                     oferta.precio,
                     oferta.precio_original,
@@ -442,26 +452,12 @@ class OfertasBot:
                 ),
                 timeout=self.config.AI_HOOK_TIMEOUT_SECONDS,
             )
-            return gancho
         except asyncio.TimeoutError:
             registrar_error_ia("bot", "timeout del gancho")
             logger.warning("Timeout generando gancho para '%s'", oferta.titulo)
-            return (
-                None
-                if self.config.AI_HOOK_REQUIRED
-                else gancho_respaldo(
-                    oferta.titulo, oferta.precio, oferta.precio_original
-                )
-            )
         except Exception as exc:  # noqa: BLE001
             logger.error("Error generando gancho: %s", exc)
-            return (
-                None
-                if self.config.AI_HOOK_REQUIRED
-                else gancho_respaldo(
-                    oferta.titulo, oferta.precio, oferta.precio_original
-                )
-            )
+        return None if self.config.AI_HOOK_REQUIRED else respaldo
 
     async def _process_new_deals(
         self,
@@ -493,7 +489,8 @@ class OfertasBot:
                 logger.warning("Presupuesto del ciclo agotado; quedan ofertas sin publicar")
                 break
 
-            gancho = await self._generar_gancho(oferta)
+            publicacion = await self._generar_gancho(oferta)
+            gancho = publicacion.gancho if publicacion else None
             if not gancho and self.config.AI_HOOK_REQUIRED:
                 logger.warning(
                     "Oferta omitida por falta de gancho IA (regla estricta): %s",
@@ -501,6 +498,8 @@ class OfertasBot:
                 )
                 continue
             oferta.gancho_ia = gancho
+            if publicacion and publicacion.titulo_es:
+                oferta.titulo_es = publicacion.titulo_es
 
             try:
                 oferta_id = await self.db_manager.guardar_oferta(

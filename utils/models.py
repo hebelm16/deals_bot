@@ -15,6 +15,7 @@ class Oferta:
     cupon: Optional[str] = None
     gancho_ia: Optional[str] = None
     info_cupon: Optional[str] = None
+    titulo_es: Optional[str] = None
     emoji: str = "✨"
 
     @classmethod

@@ -53,7 +53,12 @@ def render_offer_text(
     recorta primero el título, después la información extra y por último el
     gancho, de modo que el HTML siga siendo válido.
     """
-    titulo = limpiar_titulo(oferta.titulo) or oferta.titulo or "Oferta"
+    titulo = (
+        oferta.titulo_es
+        or limpiar_titulo(oferta.titulo)
+        or oferta.titulo
+        or "Oferta"
+    )
     precio = oferta.precio or "No disponible"
     original = oferta.precio_original
     info = resumen_info(oferta.info_cupon)

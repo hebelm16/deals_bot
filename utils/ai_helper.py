@@ -6,7 +6,7 @@ import os
 import random
 import re
 import time
-from typing import Optional
+from typing import Callable, NamedTuple, Optional
 
 import httpx
 
@@ -32,7 +32,7 @@ _key_cooldowns: dict[str, float] = {}
 _last_used_key_index = 0
 
 # Caché simple de ganchos para no pagar dos veces la misma generación.
-_cache: dict[tuple[str, str, str], str] = {}
+_cache: dict[tuple, object] = {}
 _CACHE_MAX = 300
 _sin_ia_avisado = False
 
@@ -264,8 +264,13 @@ def _limpiar_gancho(texto: Optional[str]) -> Optional[str]:
     return limpio
 
 
-async def fallback_groq(prompt: str, system_instruction: str) -> Optional[str]:
+async def fallback_groq(
+    prompt: str,
+    system_instruction: str,
+    parser: Optional[Callable[[Optional[str]], object]] = None,
+) -> object:
     """Genera el gancho con Groq si Gemini no está disponible o agotó cuota."""
+    parser = parser or _limpiar_gancho
     api_key = getattr(Config, "GROQ_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
     if not api_key or not AsyncGroq:
         return None
@@ -302,7 +307,7 @@ async def fallback_groq(prompt: str, system_instruction: str) -> Optional[str]:
                 ),
                 timeout=getattr(Config, "GROQ_CALL_TIMEOUT_SECONDS", 20),
             )
-            texto = _limpiar_gancho(response.choices[0].message.content)
+            texto = parser(response.choices[0].message.content)
             if texto:
                 _registrar_exito(f"groq:{modelo}")
                 return texto
@@ -341,16 +346,67 @@ def _config_para_modelo(
         return types.GenerateContentConfig(**params)
 
 
-async def generar_gancho_ia(
-    titulo: str, precio: str, original: Optional[str]
-) -> Optional[str]:
-    """Genera un gancho con Gemini (rotación de claves) y respaldo Groq."""
-    global _sin_ia_avisado
+class Publicacion(NamedTuple):
+    """Resultado de la IA: título en español (opcional) y gancho."""
 
-    cache_key = (titulo or "", precio or "", original or "")
-    if cache_key in _cache:
-        return _cache[cache_key]
+    titulo_es: Optional[str]
+    gancho: str
 
+
+def _numeros(texto: str) -> set[str]:
+    return set(re.findall(r"\d+", texto))
+
+
+def _limpiar_titulo_es(texto: Optional[str], original: str) -> Optional[str]:
+    """Valida el título traducido: sin HTML, sin cortes y sin perder números."""
+    if not texto:
+        return None
+    limpio = " ".join(str(texto).split())
+    limpio = re.sub(r"<[^>]+>", "", limpio)
+    limpio = limpio.strip(" \"'`*_-–|:;,")
+    if not 5 <= len(limpio) <= 120:
+        return None
+    if limpio[-1] in "$€£¥%&/+-=,;:([{":
+        return None
+    if re.search(
+        r"\b(de|del|a|al|con|para|por|en|y|o|e|u|la|el|los|las|un|una)$",
+        limpio,
+        re.IGNORECASE,
+    ):
+        return None
+    # Marca, modelo, capacidad y cantidades no se pueden perder ni inventar.
+    base = limpiar_titulo(original)
+    if not _numeros(base) <= _numeros(limpio):
+        return None
+    return limpio
+
+
+def parsear_publicacion(
+    texto: Optional[str], original: str
+) -> Optional[Publicacion]:
+    """Lee 'TITULO: ...' y 'GANCHO: ...'. El gancho es obligatorio."""
+    if not texto:
+        return None
+    titulo_raw = None
+    gancho_raw = None
+    for linea in str(texto).splitlines():
+        match = re.match(
+            r"^\W*(t[ií]tulo|gancho)\W*:\s*(.+)$", linea.strip(), re.IGNORECASE
+        )
+        if not match:
+            continue
+        valor = match.group(2).strip(" *_`")
+        if match.group(1).lower().startswith("t"):
+            titulo_raw = valor
+        else:
+            gancho_raw = valor
+    gancho = _limpiar_gancho(gancho_raw)
+    if not gancho:
+        return None
+    return Publicacion(_limpiar_titulo_es(titulo_raw, original), gancho)
+
+
+def _prompt_oferta(titulo: str, precio: str, original: Optional[str]) -> str:
     precio_str = (
         f"Precio en oferta: {precio}"
         if precio and precio != "No disponible"
@@ -361,19 +417,72 @@ async def generar_gancho_ia(
         if original and str(original).lower() != "no disponible"
         else ""
     )
-    prompt = f"Producto: {limpiar_titulo(titulo)}\n{precio_str}\n{original_str}"
+    return f"Producto: {limpiar_titulo(titulo)}\n{precio_str}\n{original_str}"
 
-    system_instruction = (
-        "Eres un carismático dominicano que comparte buenas ofertas en Telegram. "
-        "IMPORTANTE: Tú NO estás vendiendo el producto, simplemente estás compartiendo o comentando "
-        "sobre una oferta interesante que viste en internet. Háblalo de forma natural, como si "
-        "le pasaras el dato a un amigo. "
-        "Usa jerga dominicana natural (con tigueraje verdadero dominicano, 100% dominicano, klk, jevi, nítido). "
-        "No uses acentos de otros países, cero palabras como 'che', 'chama', 'órale' o 'wey'. Solo vocabulario de RD. "
-        "Asegúrate de tener SENTIDO LÓGICO: comenta algo específico del producto que estás compartiendo. "
-        "NO inventes características ni prometas nada que no esté en el texto. "
-        "Crea UNA SOLA oración corta, directa, clara y usa máximo 1 emoji al final."
+
+_ESTILO_DOMINICANO = (
+    "Eres un carismático dominicano que comparte buenas ofertas en Telegram. "
+    "IMPORTANTE: Tú NO estás vendiendo el producto, simplemente estás compartiendo o comentando "
+    "sobre una oferta interesante que viste en internet. Háblalo de forma natural, como si "
+    "le pasaras el dato a un amigo. "
+    "Usa jerga dominicana natural (con tigueraje verdadero dominicano, 100% dominicano, klk, jevi, nítido). "
+    "No uses acentos de otros países, cero palabras como 'che', 'chama', 'órale' o 'wey'. Solo vocabulario de RD. "
+    "Asegúrate de tener SENTIDO LÓGICO: comenta algo específico del producto que estás compartiendo. "
+    "NO inventes características ni prometas nada que no esté en el texto. "
+)
+
+_INSTRUCCION_GANCHO = (
+    _ESTILO_DOMINICANO
+    + "Crea UNA SOLA oración corta, directa, clara y usa máximo 1 emoji al final."
+)
+
+_INSTRUCCION_PUBLICACION = (
+    _ESTILO_DOMINICANO
+    + "Responde SIEMPRE con exactamente dos líneas y nada más:\n"
+    "TITULO: nombre del producto en español claro y neutro (no dominicano), "
+    "máximo 90 caracteres. Mantén sin traducir marcas, modelos, medidas, "
+    "capacidades y cantidades exactamente como vienen. No incluyas precio ni envío.\n"
+    "GANCHO: UNA SOLA oración corta con tu estilo, máximo 1 emoji al final."
+)
+
+
+async def generar_gancho_ia(
+    titulo: str, precio: str, original: Optional[str]
+) -> Optional[str]:
+    """Genera un gancho con Gemini (rotación de claves) y respaldo Groq."""
+    cache_key = (titulo or "", precio or "", original or "")
+    return await _generar_con_ia(
+        cache_key,
+        _prompt_oferta(titulo, precio, original),
+        _INSTRUCCION_GANCHO,
+        _limpiar_gancho,
     )
+
+
+async def generar_publicacion_ia(
+    titulo: str, precio: str, original: Optional[str]
+) -> Optional[Publicacion]:
+    """Una sola llamada: título en español + gancho."""
+    cache_key = ("pub", titulo or "", precio or "", original or "")
+    return await _generar_con_ia(
+        cache_key,
+        _prompt_oferta(titulo, precio, original),
+        _INSTRUCCION_PUBLICACION,
+        lambda texto: parsear_publicacion(texto, titulo or ""),
+    )
+
+
+async def _generar_con_ia(
+    cache_key: tuple,
+    prompt: str,
+    system_instruction: str,
+    parser: Callable[[Optional[str]], object],
+):
+    """Bucle común Gemini (multi-clave/modelo) con respaldo Groq."""
+    global _sin_ia_avisado
+
+    if cache_key in _cache:
+        return _cache[cache_key]
 
     keys = get_all_gemini_keys()
     if not keys or not genai:
@@ -383,7 +492,7 @@ async def generar_gancho_ia(
                 "respaldo de Groq o la plantilla local."
             )
             _sin_ia_avisado = True
-        resultado = await fallback_groq(prompt, system_instruction)
+        resultado = await fallback_groq(prompt, system_instruction, parser)
         if resultado:
             _guardar_cache(cache_key, resultado)
         else:
@@ -409,7 +518,7 @@ async def generar_gancho_ia(
                 wait_time,
             )
             if wait_time > 8:
-                resultado = await fallback_groq(prompt, system_instruction)
+                resultado = await fallback_groq(prompt, system_instruction, parser)
                 if resultado:
                     _guardar_cache(cache_key, resultado)
                     return resultado
@@ -436,7 +545,7 @@ async def generar_gancho_ia(
                         ),
                         timeout=getattr(Config, "GEMINI_CALL_TIMEOUT_SECONDS", 8),
                     )
-                    texto = _limpiar_gancho(getattr(response, "text", None))
+                    texto = parser(getattr(response, "text", None))
                     if texto:
                         _registrar_exito(f"gemini:{modelo}")
                         _guardar_cache(cache_key, texto)
@@ -497,13 +606,13 @@ async def generar_gancho_ia(
             break
 
     logger.info("Agotados los intentos de Gemini; intento final con Groq")
-    resultado = await fallback_groq(prompt, system_instruction)
+    resultado = await fallback_groq(prompt, system_instruction, parser)
     if resultado:
         _guardar_cache(cache_key, resultado)
     return resultado
 
 
-def _guardar_cache(key: tuple[str, str, str], valor: str) -> None:
+def _guardar_cache(key: tuple, valor: object) -> None:
     if len(_cache) >= _CACHE_MAX:
         _cache.pop(next(iter(_cache)))
     _cache[key] = valor
@@ -527,3 +636,24 @@ async def generar_gancho(
     if requerido:
         return None
     return gancho_respaldo(titulo, precio, original)
+
+
+async def generar_publicacion(
+    titulo: str,
+    precio: str,
+    original: Optional[str],
+    requerido: bool | None = None,
+) -> Optional[Publicacion]:
+    """
+    Título en español + gancho en una sola llamada de IA.
+
+    Si la IA falla y no es obligatoria, devuelve el gancho de plantilla y sin
+    título traducido (se publica el título original limpio).
+    """
+    requerido = Config.AI_HOOK_REQUIRED if requerido is None else requerido
+    resultado = await generar_publicacion_ia(titulo, precio, original)
+    if resultado:
+        return resultado
+    if requerido:
+        return None
+    return Publicacion(None, gancho_respaldo(titulo, precio, original))
