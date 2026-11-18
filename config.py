@@ -136,7 +136,7 @@ class Config:
         raw = (
             os.getenv("GEMINI_MODEL_PREFERIDOS")
             or os.getenv("GEMINI_MODEL")
-            or "gemini-3.6-flash"
+            or "gemini-3.1-flash-lite"
         )
         modelos = []
         for modelo in raw.split(","):
@@ -150,9 +150,8 @@ class Config:
         raw = (
             os.getenv("GEMINI_MODELS")
             or os.getenv("GEMINI_MODEL")
-            or "gemini-3.6-flash,gemini-3.8-flash,gemini-3.7-flash,"
-            "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-flash-latest,"
-            "gemini-2.5-flash"
+            or "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.6-flash,"
+            "gemini-3.5-flash,gemini-flash-latest,gemini-2.5-flash"
         )
         models = []
         for model in raw.split(","):

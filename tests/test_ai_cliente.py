@@ -68,7 +68,7 @@ async def test_generar_gancho_usa_cache(gemini_falso, monkeypatch):
     assert llamadas["n"] == 1
 
 
-async def test_prefiere_gemini_3_6_flash(monkeypatch):
+async def test_prefiere_gemini_3_1_flash_lite(monkeypatch):
     usados: list[str] = []
 
     class ModelosGrabadores:
@@ -97,7 +97,7 @@ async def test_prefiere_gemini_3_6_flash(monkeypatch):
     monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", descubiertos)
 
     await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
-    assert usados[0] == "gemini-3.6-flash"
+    assert usados[0] == "gemini-3.1-flash-lite"
 
 
 async def test_cuota_diaria_pone_la_clave_en_pausa_larga(monkeypatch):
