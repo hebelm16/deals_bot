@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 # {clave: timestamp hasta el que está en cooldown}
 _key_cooldowns: dict[str, float] = {}
 _last_used_key_index = 0
+# La cuota de Google es por modelo y proyecto: {(clave, modelo): hasta cuándo}
+_modelo_cooldowns: dict[tuple[str, str], float] = {}
 
 # Caché simple de ganchos para no pagar dos veces la misma generación.
 _cache: dict[tuple, object] = {}
@@ -552,7 +554,11 @@ async def _generar_con_ia(
             continue
 
         clave_bloqueada = False
+        agotados = 0
         for modelo in modelos:
+            if _modelo_cooldowns.get((key, modelo), 0.0) > time.time():
+                agotados += 1
+                continue
             for con_thinking in (True, False):
                 config = _config_para_modelo(modelo, system_instruction, con_thinking)
                 try:
@@ -596,12 +602,13 @@ async def _generar_con_ia(
                         else:
                             cooldown = 60.0
                         logger.warning(
-                            "Límite de Gemini en %s; clave en pausa %.1fs",
+                            "Cuota agotada en %s; se pausa ese modelo %.0fs y se "
+                            "prueba el siguiente",
                             modelo,
                             cooldown,
                         )
-                        _key_cooldowns[key] = time.time() + cooldown
-                        clave_bloqueada = True
+                        _modelo_cooldowns[(key, modelo)] = time.time() + cooldown
+                        agotados += 1
                         break
                     if "not found" in error_msg.lower() or "404" in error_msg:
                         logger.warning(
@@ -622,8 +629,13 @@ async def _generar_con_ia(
                         exc,
                     )
                     break
-            if clave_bloqueada:
-                break
+        if agotados >= len(modelos):
+            # Todos los modelos de esta clave sin cuota: se pasa a la siguiente.
+            hasta = min(
+                _modelo_cooldowns.get((key, modelo), 0.0) for modelo in modelos
+            )
+            _key_cooldowns[key] = max(hasta, time.time() + 1.0)
+            clave_bloqueada = True
         if not clave_bloqueada:
             # Ningún modelo respondió: no tiene sentido repetir la misma clave.
             break

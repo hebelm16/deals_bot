@@ -165,3 +165,49 @@ async def test_clave_en_pausa_larga_va_directo_a_groq_sin_dormir(monkeypatch):
 
     assert await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
     assert dormido == []
+
+
+async def test_429_en_un_modelo_prueba_el_siguiente_modelo(monkeypatch):
+    usados: list[str] = []
+
+    class Modelos:
+        async def generate_content(self, **kwargs):
+            usados.append(kwargs["model"])
+            if kwargs["model"] == "gemini-3.6-flash":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED. quota exceeded")
+            return _Respuesta()
+
+    monkeypatch.setattr(Config, "GEMINI_API_KEYS", "clave-a")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY_BACKUP", "")
+    monkeypatch.setattr(Config, "GROQ_API_KEY", "")
+    monkeypatch.setattr(
+        Config,
+        "gemini_model_preferidos",
+        classmethod(lambda cls: ["gemini-3.6-flash", "gemini-3.1-flash-lite"]),
+    )
+    monkeypatch.setattr(
+        ai_helper,
+        "genai",
+        SimpleNamespace(
+            Client=lambda api_key=None: SimpleNamespace(
+                aio=SimpleNamespace(models=Modelos())
+            )
+        ),
+    )
+    monkeypatch.setattr(ai_helper, "_cache", {})
+    monkeypatch.setattr(ai_helper, "_key_cooldowns", {})
+    monkeypatch.setattr(ai_helper, "_modelo_cooldowns", {})
+
+    async def sin_descubrimiento(_keys):
+        return []
+
+    monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", sin_descubrimiento)
+
+    assert await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
+    assert "gemini-3.1-flash-lite" in usados
+
+    # La siguiente oferta ya no pierde tiempo con el modelo sin cuota.
+    usados.clear()
+    assert await ai_helper.generar_gancho_ia("TV 4K", "$300", "$500")
+    assert usados and "gemini-3.6-flash" not in usados
