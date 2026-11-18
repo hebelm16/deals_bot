@@ -34,6 +34,12 @@ from utils.ai_helper import (
     generar_publicacion,
     registrar_error_ia,
 )
+from utils.events import (
+    _estado_evento,
+    cargar_evento,
+    desactivar_evento,
+    esta_activo,
+)
 from utils.filters import categoria_no_producto, parsear_categorias
 from utils.formatting import (
     CAPTION_LIMIT,
@@ -130,6 +136,7 @@ class OfertasBot:
             with lock:
                 logger.info("Bloqueo adquirido en %s", self.lock_file)
                 await self.db_manager.init_db()
+                await cargar_evento(self.db_manager)
                 await self._cargar_estado_fuentes()
                 await self._iniciar_aplicacion()
                 await self._iniciar_red()
@@ -139,6 +146,12 @@ class OfertasBot:
                 logger.info(
                     "Ciclo de scraping cada %ss (primera ejecución inmediata)",
                     self.config.LOOP_INTERVAL_SECONDS,
+                )
+                self.application.job_queue.run_repeating(
+                    self._tarea_revisar_evento,
+                    interval=600,
+                    first=5,
+                    name="evento",
                 )
                 self.application.job_queue.run_repeating(
                     self.scheduled_check_ofertas,
@@ -817,6 +830,13 @@ class OfertasBot:
             self._salud["last_error"] = None
             await self.db_manager.marcar_ciclo(True, detalle)
             logger.info("Resumen del ciclo: %s", detalle)
+
+    async def _tarea_revisar_evento(self, context=None) -> None:
+        if esta_activo() and time.time() > _estado_evento.fin_ts:
+            await desactivar_evento(self.db_manager)
+            await self.enviar_mensaje_admin(
+                f"🔚 Modo <b>{_estado_evento.nombre}</b> finalizado."
+            )
 
     async def _tarea_heartbeat(self, context=None) -> None:
         try:
