@@ -259,7 +259,10 @@ def _limpiar_gancho(texto: Optional[str]) -> Optional[str]:
         re.IGNORECASE,
     ):
         return None
-    if not re.search(r"[.!?…]$", limpio):
+    # Un punto pegado a un emoji final ("😎.") queda feo: se quita.
+    limpio = re.sub(r"([\u2190-\U0001FAFF\uFE0F])\.+$", r"\1", limpio)
+    termina_en_emoji = ord(limpio[-1]) >= 0x2190 or limpio[-1] == "\ufe0f"
+    if not termina_en_emoji and not re.search(r"[.!?…]$", limpio):
         limpio = limpio + "."
     return limpio
 
@@ -533,6 +536,9 @@ async def _generar_con_ia(
                 if resultado:
                     _guardar_cache(cache_key, resultado)
                     return resultado
+            if wait_time > 15:
+                # Pausa larga (p. ej. cuota diaria): esperar no sirve de nada.
+                break
             await asyncio.sleep(min(wait_time, 15.0))
             key, _ = get_next_available_key(keys)
             if not key:
@@ -582,7 +588,13 @@ async def _generar_con_ia(
                         or "quota" in error_msg.lower()
                     ):
                         match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_msg)
-                        cooldown = float(match.group(1)) + 1.0 if match else 20.0
+                        if match:
+                            cooldown = float(match.group(1)) + 1.0
+                        elif "PerDay" in error_msg or "per day" in error_msg.lower():
+                            # Cuota diaria agotada: no tiene sentido reintentar pronto.
+                            cooldown = 1800.0
+                        else:
+                            cooldown = 60.0
                         logger.warning(
                             "Límite de Gemini en %s; clave en pausa %.1fs",
                             modelo,

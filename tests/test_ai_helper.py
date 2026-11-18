@@ -44,3 +44,10 @@ def test_agrega_punto_si_falta():
 
 def test_conserva_gancho_completo():
     assert _limpiar_gancho("Ese SSD está nítido, klk.") == "Ese SSD está nítido, klk."
+
+
+def test_gancho_con_emoji_final_no_lleva_punto_pegado():
+    assert _limpiar_gancho("Ese precio está nítido, míralo 😎.") == "Ese precio está nítido, míralo 😎"
+    assert _limpiar_gancho("Ese precio está nítido, míralo 😎") == "Ese precio está nítido, míralo 😎"
+    assert _limpiar_gancho("Ese precio está nítido, míralo") == "Ese precio está nítido, míralo."
+    assert _limpiar_gancho("Ese precio está nítido, míralo!") == "Ese precio está nítido, míralo!"

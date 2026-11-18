@@ -98,3 +98,70 @@ async def test_prefiere_gemini_3_6_flash(monkeypatch):
 
     await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
     assert usados[0] == "gemini-3.6-flash"
+
+
+async def test_cuota_diaria_pone_la_clave_en_pausa_larga(monkeypatch):
+    import time
+
+    class Modelos:
+        async def generate_content(self, **kwargs):
+            raise RuntimeError(
+                "429 RESOURCE_EXHAUSTED. quota exceeded: "
+                "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+            )
+
+    monkeypatch.setattr(Config, "GEMINI_API_KEYS", "clave-cuota")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY_BACKUP", "")
+    monkeypatch.setattr(Config, "GROQ_API_KEY", "")
+    monkeypatch.setattr(
+        ai_helper,
+        "genai",
+        SimpleNamespace(
+            Client=lambda api_key=None: SimpleNamespace(
+                aio=SimpleNamespace(models=Modelos())
+            )
+        ),
+    )
+    monkeypatch.setattr(ai_helper, "_cache", {})
+    monkeypatch.setattr(ai_helper, "_key_cooldowns", {})
+
+    async def sin_descubrimiento(_keys):
+        return []
+
+    monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", sin_descubrimiento)
+
+    assert await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100") is None
+    restante = ai_helper._key_cooldowns["clave-cuota"] - time.time()
+    assert restante > 1000
+
+
+async def test_clave_en_pausa_larga_va_directo_a_groq_sin_dormir(monkeypatch):
+    import time
+
+    dormido = []
+
+    async def dormir_falso(segundos):
+        dormido.append(segundos)
+
+    async def groq_falso(prompt, instruccion, parser=None):
+        return "Ese precio está nítido, míralo."
+
+    monkeypatch.setattr(Config, "GEMINI_API_KEYS", "clave-pausada")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY_BACKUP", "")
+    monkeypatch.setattr(ai_helper, "genai", SimpleNamespace(Client=lambda api_key=None: None))
+    monkeypatch.setattr(ai_helper, "_cache", {})
+    monkeypatch.setattr(
+        ai_helper, "_key_cooldowns", {"clave-pausada": time.time() + 1800}
+    )
+    monkeypatch.setattr(ai_helper.asyncio, "sleep", dormir_falso)
+    monkeypatch.setattr(ai_helper, "fallback_groq", groq_falso)
+
+    async def sin_descubrimiento(_keys):
+        return []
+
+    monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", sin_descubrimiento)
+
+    assert await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
+    assert dormido == []
