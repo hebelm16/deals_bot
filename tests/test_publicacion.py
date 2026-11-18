@@ -195,3 +195,18 @@ async def test_timeout_usa_respaldo_segun_regla(tmp_path, monkeypatch, requerido
     assert (resultado is None) == requerido
     if not requerido:
         assert resultado.titulo_es is None and resultado.gancho
+
+
+def test_titulo_igual_al_original_no_cuenta_como_traduccion():
+    original = "Sony WH-1000XM5 Wireless Noise Cancelling Headphones $248"
+    texto = (
+        "TITULO: Sony WH-1000XM5 Wireless Noise Cancelling Headphones\n"
+        "GANCHO: Están nítidos esos audífonos, aprovecha."
+    )
+    pub = parsear_publicacion(texto, original)
+    assert pub is not None and pub.titulo_es is None
+    traducido = (
+        "TITULO: Audífonos inalámbricos Sony WH-1000XM5 con cancelación de ruido\n"
+        "GANCHO: Están nítidos esos audífonos, aprovecha."
+    )
+    assert parsear_publicacion(traducido, original).titulo_es

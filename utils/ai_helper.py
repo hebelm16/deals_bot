@@ -6,6 +6,7 @@ import os
 import random
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Callable, NamedTuple, Optional
 
 import httpx
@@ -32,6 +33,8 @@ _key_cooldowns: dict[str, float] = {}
 _last_used_key_index = 0
 # La cuota de Google es por modelo y proyecto: {(clave, modelo): hasta cuándo}
 _modelo_cooldowns: dict[tuple[str, str], float] = {}
+# Modelos que rechazaron la configuración de thinking: se llaman sin ella.
+_sin_thinking: set[str] = set()
 
 # Caché simple de ganchos para no pagar dos veces la misma generación.
 _cache: dict[tuple, object] = {}
@@ -337,11 +340,18 @@ def _config_para_modelo(
     }
     if (
         con_thinking
+        and modelo not in _sin_thinking
         and modelo.startswith(("gemini-2.5", "gemini-3"))
         and types is not None
     ):
         try:
-            params["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+            if modelo.startswith("gemini-3"):
+                # Gemini 3 usa niveles; thinking_budget=0 da 400 INVALID_ARGUMENT.
+                params["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=types.ThinkingLevel.MINIMAL
+                )
+            else:
+                params["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
         except Exception:  # noqa: BLE001 - versión antigua del SDK
             pass
     try:
@@ -381,6 +391,9 @@ def _limpiar_titulo_es(texto: Optional[str], original: str) -> Optional[str]:
         return None
     # Marca, modelo, capacidad y cantidades no se pueden perder ni inventar.
     base = limpiar_titulo(original)
+    if SequenceMatcher(None, base.lower(), limpio.lower()).ratio() >= 0.93:
+        logger.info("Título 'traducido' igual al original; se descarta: %r", limpio)
+        return None
     faltantes = _numeros(base) - _numeros(limpio)
     if faltantes:
         logger.info(
@@ -455,10 +468,18 @@ _INSTRUCCION_GANCHO = (
 _INSTRUCCION_PUBLICACION = (
     _ESTILO_DOMINICANO
     + "Responde SIEMPRE con exactamente dos líneas y nada más:\n"
-    "TITULO: nombre del producto en español claro y neutro (no dominicano), "
-    "máximo 90 caracteres. Mantén sin traducir marcas, modelos, medidas, "
-    "capacidades y cantidades exactamente como vienen. No incluyas precio ni envío.\n"
-    "GANCHO: UNA SOLA oración corta con tu estilo, máximo 1 emoji al final."
+    "TITULO: nombre del producto TRADUCIDO al español claro y neutro (no dominicano), "
+    "máximo 90 caracteres. Traduce TODAS las palabras descriptivas (tipo de producto, "
+    "material, función, color, público); NUNCA devuelvas el título igual que en inglés. "
+    "Solo mantén sin traducir marcas, modelos, medidas, capacidades y cantidades "
+    "exactamente como vienen. No incluyas precio ni envío.\n"
+    "GANCHO: UNA SOLA oración corta con tu estilo, máximo 1 emoji al final.\n"
+    "Ejemplos de TITULO:\n"
+    "Sony WH-1000XM5 Wireless Noise Cancelling Headphones -> "
+    "Audífonos inalámbricos Sony WH-1000XM5 con cancelación de ruido\n"
+    "Levi's Men's 511 Slim Fit Jeans -> Jeans Levi's 511 corte ajustado para hombre\n"
+    "Anker 737 Power Bank 24,000mAh 140W Portable Charger -> "
+    "Batería portátil Anker 737 de 24,000mAh y 140W"
 )
 
 
@@ -519,7 +540,11 @@ async def _generar_con_ia(
     descubiertos = await descubrir_modelos_gemini(keys)
     # El modelo elegido se intenta siempre primero; el descubrimiento solo
     # aporta alternativas si ese modelo no está disponible para la clave.
-    orden = [*preferidos, *descubiertos, *Config.gemini_models()]
+    respaldo = Config.gemini_models()
+    if descubiertos:
+        # Del respaldo configurado solo valen los modelos que la clave puede usar.
+        respaldo = [m for m in respaldo if m in descubiertos]
+    orden = [*preferidos, *respaldo, *descubiertos]
 
     modelos: list[str] = []
     for nombre in orden:
@@ -622,6 +647,7 @@ async def _generar_con_ia(
                         logger.warning(
                             "El modelo %s rechazó thinking; se reintenta sin él", modelo
                         )
+                        _sin_thinking.add(modelo)
                         continue
                     logger.error(
                         "Error de Gemini (%s): %s; se prueba el siguiente modelo",

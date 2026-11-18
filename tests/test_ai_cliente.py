@@ -211,3 +211,60 @@ async def test_429_en_un_modelo_prueba_el_siguiente_modelo(monkeypatch):
     usados.clear()
     assert await ai_helper.generar_gancho_ia("TV 4K", "$300", "$500")
     assert usados and "gemini-3.6-flash" not in usados
+
+
+async def test_modelo_preferido_se_prueba_antes_que_los_descubiertos(monkeypatch):
+    usados: list[str] = []
+
+    class Modelos:
+        async def generate_content(self, **kwargs):
+            usados.append(kwargs["model"])
+            if kwargs["model"] != "gemini-3.1-flash-lite":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED. quota exceeded")
+            return _Respuesta()
+
+    monkeypatch.setattr(Config, "GEMINI_API_KEYS", "clave-orden")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(Config, "GEMINI_API_KEY_BACKUP", "")
+    monkeypatch.setattr(Config, "GROQ_API_KEY", "")
+    monkeypatch.setattr(
+        Config, "gemini_model_preferidos", classmethod(lambda cls: ["gemini-3.6-flash"])
+    )
+    monkeypatch.setattr(
+        Config,
+        "gemini_models",
+        classmethod(lambda cls: ["gemini-3.6-flash", "gemini-3.1-flash-lite"]),
+    )
+    monkeypatch.setattr(
+        ai_helper,
+        "genai",
+        SimpleNamespace(
+            Client=lambda api_key=None: SimpleNamespace(
+                aio=SimpleNamespace(models=Modelos())
+            )
+        ),
+    )
+    for nombre in ("_cache", "_key_cooldowns", "_modelo_cooldowns"):
+        monkeypatch.setattr(ai_helper, nombre, {})
+
+    async def descubiertos(_keys):
+        return ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
+
+    monkeypatch.setattr(ai_helper, "descubrir_modelos_gemini", descubiertos)
+
+    assert await ai_helper.generar_gancho_ia("SSD 1TB", "$50", "$100")
+    # El respaldo configurado va antes que lo que solo descubrió la API.
+    assert usados.index("gemini-3.1-flash-lite") < (
+        usados.index("gemini-3.5-flash-lite")
+        if "gemini-3.5-flash-lite" in usados
+        else 99
+    )
+    assert usados[-1] == "gemini-3.1-flash-lite"
+
+
+def test_gemini_3_usa_thinking_level_y_no_budget():
+    cfg = ai_helper._config_para_modelo("gemini-3.1-flash-lite", "sistema", True)
+    assert cfg.thinking_config.thinking_level is not None
+    assert not cfg.thinking_config.thinking_budget
+    cfg25 = ai_helper._config_para_modelo("gemini-2.5-flash", "sistema", True)
+    assert cfg25.thinking_config.thinking_budget == 0
