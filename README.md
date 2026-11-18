@@ -105,6 +105,7 @@ propietario del volumen `/data` antes de bajar privilegios con `gosu`.
 | `/diagnostico` | Admin | IA, base de datos, pendientes, webhook y errores |
 | `/test_ia` | Admin | Prueba real de IA y muestra el proveedor o el error |
 | `/habilitar`, `/deshabilitar` | Admin | Cambian fuentes y lo persisten |
+| `/evento [nombre] [horas]` | Admin | Activa, consulta o apaga el modo evento (15 min, topes diarios) |
 
 ## Estructura
 

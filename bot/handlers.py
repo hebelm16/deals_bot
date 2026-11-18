@@ -26,11 +26,17 @@ def setup_handlers(application, bot) -> None:
     application.add_handler(CommandHandler("test_ia", test_ia))
     application.add_handler(CommandHandler("habilitar", habilitar_fuente))
     application.add_handler(CommandHandler("deshabilitar", deshabilitar_fuente))
+    application.add_handler(CommandHandler("evento", comando_evento))
     application.add_handler(CommandHandler("alerta", agregar_alerta))
     application.add_handler(CommandHandler("mis_alertas", mis_alertas))
     application.add_handler(CommandHandler("borrar_alerta", borrar_alerta))
     application.add_handler(CommandHandler("borrar_mis_datos", borrar_mis_datos))
-    application.add_handler(CallbackQueryHandler(manejar_callback_fuente))
+    application.add_handler(
+        CallbackQueryHandler(manejar_callback_fuente, pattern=r"^fuente:")
+    )
+    application.add_handler(
+        CallbackQueryHandler(manejar_callback_evento, pattern=r"^evento:")
+    )
 
 
 def admin_required(func):
@@ -107,8 +113,19 @@ async def obtener_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lineas.append(
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']} · "
         f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']} · "
-        f"Duplicadas: {stats.get('duplicadas', 0)}"
+        f"Duplicadas: {stats.get('duplicadas', 0)} · "
+        f"Excluidas: {stats.get('excluidas', 0)}"
     )
+    if hasattr(bot, "evento"):
+        res_ev = bot.evento.resumen()
+        if res_ev["activo"]:
+            lineas.append("")
+            lineas.append(
+                f"<b>Modo evento:</b> {html.escape(res_ev['etiqueta'])} "
+                f"(hasta <code>{html.escape(time_str(res_ev['fin_ts']))}</code> · "
+                f"pub {res_ev['pub_usadas_hoy']}/{res_ev['pub_max_dia']} · "
+                f"IA {res_ev['ia_usadas_hoy']}/{res_ev['ia_max_dia']})"
+            )
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
 
 
@@ -138,10 +155,12 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"Base de datos: <code>{html.escape(os.path.abspath(config.DATABASE))}</code>",
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']}",
         f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']} · "
-        f"Duplicadas: {stats.get('duplicadas', 0)}",
+        f"Duplicadas: {stats.get('duplicadas', 0)} · "
+        f"Excluidas: {stats.get('excluidas', 0)}",
         "Imágenes: "
         f"URL {imagenes.get('url', 0)} · descargadas {imagenes.get('descargada', 0)} · "
         f"respaldo {imagenes.get('placeholder', 0)} · texto {imagenes.get('texto', 0)}",
+        _linea_diagnostico_evento(bot),
         "",
         "<b>Fuentes:</b>",
     ]
@@ -332,6 +351,199 @@ async def manejar_callback_fuente(
     except Exception:  # noqa: BLE001
         await context.bot.send_message(
             chat_id=query.message.chat_id, text=mensaje
+        )
+
+
+def _formatear_restante(segundos: int) -> str:
+    if segundos < 60:
+        return "&lt;1m"
+    minutos = segundos // 60
+    horas, mins = divmod(minutos, 60)
+    if horas:
+        return f"{horas}h {mins}m"
+    return f"{mins}m"
+
+
+def _linea_diagnostico_evento(bot) -> str:
+    if not hasattr(bot, "evento"):
+        return "Modo evento: no disponible"
+    res = bot.evento.resumen()
+    mins = max(1, res["intervalo_segundos"] // 60)
+    if res["activo"]:
+        return (
+            f"Modo evento: <b>activo</b> ({html.escape(res['etiqueta'])}, "
+            f"cada {mins} min, pub {res['pub_usadas_hoy']}/{res['pub_max_dia']}, "
+            f"IA {res['ia_usadas_hoy']}/{res['ia_max_dia']})"
+        )
+    return f"Modo evento: inactivo (ciclo cada {mins} min)"
+
+
+def _panel_evento(bot) -> tuple[str, InlineKeyboardMarkup]:
+    res = bot.evento.resumen()
+    mins = max(1, res["intervalo_segundos"] // 60)
+    if res["activo"]:
+        texto = (
+            "🔥 <b>Modo evento activo</b>\n\n"
+            f"Evento: <code>{html.escape(res['nombre'])}</code> "
+            f"({html.escape(res['etiqueta'])})\n"
+            f"Termina: <code>{html.escape(time_str(res['fin_ts']))}</code> "
+            f"(quedan {_formatear_restante(res['restante_segundos'])})\n"
+            f"Ciclo: cada {mins} min · máx {res['max_por_ciclo']}/ciclo\n"
+            f"Hoy: {res['pub_usadas_hoy']}/{res['pub_max_dia']} publicaciones · "
+            f"{res['ia_usadas_hoy']}/{res['ia_max_dia']} llamadas IA"
+        )
+        teclado = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("🔄 Extender +24h", callback_data="evento:extender:24"),
+                    InlineKeyboardButton("🛑 Desactivar", callback_data="evento:off"),
+                ],
+                [InlineKeyboardButton("↻ Actualizar", callback_data="evento:estado")],
+            ]
+        )
+        return texto, teclado
+
+    texto = (
+        "⏸️ <b>Modo evento inactivo</b>\n\n"
+        f"Ciclo normal: cada {mins} min · máx {res['max_por_ciclo']} ofertas/ciclo\n"
+        f"Hoy (evento): {res['pub_usadas_hoy']}/{res['pub_max_dia']} publicaciones · "
+        f"{res['ia_usadas_hoy']}/{res['ia_max_dia']} llamadas IA\n\n"
+        "<b>Uso rápido:</b>\n"
+        "<code>/evento black_friday 72</code>\n"
+        "<code>/evento prime_day 48</code>\n"
+        "<code>/evento off</code>"
+    )
+    teclado = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔥 Black Friday (72h)", callback_data="evento:on:black_friday:72"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📦 Prime Day (48h)", callback_data="evento:on:prime_day:48"
+                ),
+                InlineKeyboardButton(
+                    "⚡ Cyber Monday (24h)", callback_data="evento:on:cyber_monday:24"
+                ),
+            ],
+        ]
+    )
+    return texto, teclado
+
+
+@admin_required
+async def comando_evento(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bot = context.bot_data["bot"]
+    await bot.evento.verificar_expiracion()
+    args = context.args or []
+
+    if not args:
+        texto, teclado = _panel_evento(bot)
+        await update.message.reply_text(
+            texto, parse_mode="HTML", reply_markup=teclado
+        )
+        return
+
+    if args[0].lower() in ("off", "stop", "desactivar", "apagar"):
+        nombre = await bot.evento.desactivar()
+        if nombre:
+            bot.reprogramar_ciclo(ejecutar_pronto=False)
+            mins = max(1, bot.intervalo_ciclo_actual() // 60)
+            await update.message.reply_text(
+                f"🛑 Modo evento <b>{html.escape(nombre)}</b> desactivado.\n"
+                f"Ciclo normal restaurado (cada {mins} min).",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text("El modo evento ya estaba inactivo.")
+        return
+
+    nombre = args[0]
+    if len(args) >= 2:
+        try:
+            horas = int(args[1])
+        except ValueError:
+            await update.message.reply_text(
+                "Uso: <code>/evento &lt;nombre&gt; [horas]</code> o <code>/evento off</code>\n"
+                "Ejemplo: <code>/evento black_friday 72</code>",
+                parse_mode="HTML",
+            )
+            return
+    else:
+        horas = int(getattr(bot.config, "EVENTO_HORAS_DEFECTO", 72))
+
+    try:
+        await bot.evento.activar(nombre, horas)
+    except ValueError as exc:
+        await update.message.reply_text(f"⚠️ {exc}")
+        return
+
+    bot.reprogramar_ciclo(ejecutar_pronto=True)
+    texto, teclado = _panel_evento(bot)
+    await update.message.reply_text(
+        f"✅ <b>Modo evento activado</b> (primera revisión en segundos)\n\n{texto}",
+        parse_mode="HTML",
+        reply_markup=teclado,
+    )
+
+
+@admin_required
+async def manejar_callback_evento(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    bot = context.bot_data["bot"]
+    query = update.callback_query
+    await query.answer()
+
+    partes = (query.data or "").split(":")
+    accion = partes[1] if len(partes) > 1 else ""
+    prefijo = ""
+
+    if accion == "on" and len(partes) >= 4:
+        try:
+            horas = int(partes[3])
+            await bot.evento.activar(partes[2], horas)
+            bot.reprogramar_ciclo(ejecutar_pronto=True)
+            prefijo = "✅ <b>Modo evento activado</b> (primera revisión en segundos)\n\n"
+        except ValueError as exc:
+            prefijo = f"⚠️ {html.escape(str(exc))}\n\n"
+    elif accion == "extender" and len(partes) >= 3:
+        try:
+            horas = int(partes[2])
+            extendido = await bot.evento.extender(horas)
+            if extendido:
+                prefijo = f"🔄 <b>Evento extendido +{horas}h</b>\n\n"
+            else:
+                prefijo = "ℹ️ El evento ya había finalizado.\n\n"
+        except ValueError as exc:
+            prefijo = f"⚠️ {html.escape(str(exc))}\n\n"
+    elif accion == "off":
+        nombre = await bot.evento.desactivar()
+        if nombre:
+            bot.reprogramar_ciclo(ejecutar_pronto=False)
+            prefijo = f"🛑 <b>Modo {html.escape(nombre)} desactivado</b>\n\n"
+        else:
+            prefijo = "ℹ️ El modo evento ya estaba inactivo.\n\n"
+    elif accion == "estado":
+        await bot.evento.verificar_expiracion()
+    else:
+        await query.edit_message_text("Acción de evento no válida.")
+        return
+
+    texto, teclado = _panel_evento(bot)
+    mensaje = f"{prefijo}{texto}"
+    try:
+        await query.edit_message_text(
+            mensaje, parse_mode="HTML", reply_markup=teclado
+        )
+    except Exception:  # noqa: BLE001
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=mensaje,
+            parse_mode="HTML",
+            reply_markup=teclado,
         )
 
 

@@ -101,7 +101,7 @@ def render_offer_text(
             lineas.append(f'🔗 <a href="{link}">Ir a la Oferta</a>')
         if tag:
             lineas.append("")
-            lineas.append(f"🏷️ {_esc(_corta(tag, 40))}")
+            lineas.append(f"🏷️ {_esc(_corta(tag, 60))}")
         return "\n".join(lineas)
 
     variantes = [

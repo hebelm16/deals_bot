@@ -34,12 +34,7 @@ from utils.ai_helper import (
     generar_publicacion,
     registrar_error_ia,
 )
-from utils.events import (
-    _estado_evento,
-    cargar_evento,
-    desactivar_evento,
-    esta_activo,
-)
+from utils.events import GestorEvento
 from utils.filters import categoria_no_producto, parsear_categorias
 from utils.formatting import (
     CAPTION_LIMIT,
@@ -89,6 +84,7 @@ class OfertasBot:
             "placeholder": 0,
             "texto": 0,
         }
+        self.evento = GestorEvento(self.db_manager, self.config)
 
     # ------------------------------------------------------------------ arranque
     def init_scrapers(self) -> Dict[str, Any]:
@@ -136,26 +132,27 @@ class OfertasBot:
             with lock:
                 logger.info("Bloqueo adquirido en %s", self.lock_file)
                 await self.db_manager.init_db()
-                await cargar_evento(self.db_manager)
+                expirado = await self.evento.cargar()
                 await self._cargar_estado_fuentes()
                 await self._iniciar_aplicacion()
                 await self._iniciar_red()
                 self._instalar_senales()
                 self._iniciar_health_server()
 
+                intervalo = self.intervalo_ciclo_actual()
                 logger.info(
                     "Ciclo de scraping cada %ss (primera ejecución inmediata)",
-                    self.config.LOOP_INTERVAL_SECONDS,
+                    intervalo,
                 )
                 self.application.job_queue.run_repeating(
                     self._tarea_revisar_evento,
-                    interval=600,
-                    first=5,
+                    interval=60,
+                    first=15,
                     name="evento",
                 )
                 self.application.job_queue.run_repeating(
                     self.scheduled_check_ofertas,
-                    interval=self.config.LOOP_INTERVAL_SECONDS,
+                    interval=intervalo,
                     first=1,
                     name="ciclo_ofertas",
                 )
@@ -165,6 +162,11 @@ class OfertasBot:
                     first=30,
                     name="heartbeat",
                 )
+                if expirado:
+                    await self.enviar_mensaje_admin(
+                        f"🔚 El modo evento <b>{html.escape(expirado)}</b> finalizó "
+                        "mientras el bot estaba apagado. Se restauró el ciclo normal."
+                    )
                 await self.stop_event.wait()
         except FileLockTimeout:
             logger.error(
@@ -200,6 +202,7 @@ class OfertasBot:
             BotCommand("estado", "Estado de fuentes y ciclo (Admin)"),
             BotCommand("diagnostico", "Diagnóstico técnico (Admin)"),
             BotCommand("test_ia", "Prueba la conexión con la IA (Admin)"),
+            BotCommand("evento", "Activa o consulta el modo evento (Admin)"),
         ]
         try:
             await self.bot.set_my_commands(comandos)
@@ -396,12 +399,35 @@ class OfertasBot:
         return resultado
 
     # ------------------------------------------------------------------ publicación
+    def intervalo_ciclo_actual(self) -> int:
+        return self.evento.intervalo_ciclo()
+
+    def reprogramar_ciclo(self, ejecutar_pronto: bool = False) -> None:
+        if not self.application or not self.application.job_queue:
+            return
+        jq = self.application.job_queue
+        for job in jq.get_jobs_by_name("ciclo_ofertas"):
+            job.schedule_removal()
+        intervalo = self.intervalo_ciclo_actual()
+        primero = 2 if ejecutar_pronto else intervalo
+        jq.run_repeating(
+            self.scheduled_check_ofertas,
+            interval=intervalo,
+            first=primero,
+            name="ciclo_ofertas",
+        )
+        logger.info(
+            "Ciclo de scraping reprogramado cada %ss (próxima ejecución en %ss)",
+            intervalo,
+            primero,
+        )
+
     def _seleccionar_ofertas(
         self, ofertas_por_fuente: Dict[str, List[Oferta]]
     ) -> List[Oferta]:
         return seleccionar_mejores(
             ofertas_por_fuente,
-            self.config.MAX_OFERTAS_POR_EJECUCION,
+            self.evento.max_ofertas_ciclo(),
             umbral_titulos=self.config.SIMILITUD_TITULOS_MINIMA,
         )
 
@@ -455,6 +481,16 @@ class OfertasBot:
             None,
             gancho_respaldo(oferta.titulo, oferta.precio, oferta.precio_original),
         )
+        if not self.evento.puede_usar_ia():
+            logger.info(
+                "Presupuesto diario de IA del modo evento agotado (%s/%s); "
+                "se usa plantilla local para '%s'",
+                self.evento.estado.ia_usadas_hoy,
+                self.config.EVENTO_MAX_IA_DIA,
+                oferta.titulo,
+            )
+            return None if self.config.AI_HOOK_REQUIRED else respaldo
+        await self.evento.registrar_llamada_ia()
         try:
             return await asyncio.wait_for(
                 generar_publicacion(
@@ -477,6 +513,14 @@ class OfertasBot:
         new_deals_by_source: Dict[str, List[Oferta]],
         deadline: Optional[float] = None,
     ) -> int:
+        if self.evento.esta_activo() and self.evento.cupo_publicaciones_restante() <= 0:
+            logger.info(
+                "Tope diario del modo evento alcanzado (%s/%s); no se publican más ofertas hoy",
+                self.evento.estado.pub_usadas_hoy,
+                self.config.EVENTO_MAX_OFERTAS_DIA,
+            )
+            return 0
+
         seleccionadas = self._seleccionar_ofertas(new_deals_by_source)
         logger.info("Ofertas seleccionadas para publicar: %s", len(seleccionadas))
         if not seleccionadas:
@@ -513,6 +557,8 @@ class OfertasBot:
             oferta.gancho_ia = gancho
             if publicacion and publicacion.titulo_es:
                 oferta.titulo_es = publicacion.titulo_es
+            if self.evento.esta_activo():
+                oferta.tag = self.evento.aplicar_etiqueta(oferta.tag)
 
             try:
                 oferta_id = await self.db_manager.guardar_oferta(
@@ -529,6 +575,7 @@ class OfertasBot:
                 continue
 
             await self.db_manager.marcar_oferta_enviada(oferta_id, message_id)
+            await self.evento.registrar_publicacion()
             enviadas += 1
             logger.info("Oferta publicada: %s (%s)", oferta.titulo, oferta.tag)
             await self._enviar_alertas(oferta, patrones)
@@ -810,6 +857,14 @@ class OfertasBot:
         deadline = inicio + max(30, self.config.CYCLE_TIMEOUT_SECONDS - 30)
         async with self.lock:
             try:
+                expirado = await self.evento.verificar_expiracion()
+                if expirado:
+                    self.reprogramar_ciclo(ejecutar_pronto=False)
+                    minutos = max(1, self.intervalo_ciclo_actual() // 60)
+                    await self.enviar_mensaje_admin(
+                        f"🔚 Modo evento <b>{html.escape(expirado)}</b> finalizado.\n"
+                        f"Se restauró el ciclo normal cada {minutos} min."
+                    )
                 scraped = await self._scrape_all_sources()
                 nuevas = await self._filter_new_deals(scraped)
                 enviadas = await self._process_new_deals(nuevas, deadline=deadline)
@@ -832,11 +887,18 @@ class OfertasBot:
             logger.info("Resumen del ciclo: %s", detalle)
 
     async def _tarea_revisar_evento(self, context=None) -> None:
-        if esta_activo() and time.time() > _estado_evento.fin_ts:
-            await desactivar_evento(self.db_manager)
+        try:
+            expirado = await self.evento.verificar_expiracion()
+            if not expirado:
+                return
+            self.reprogramar_ciclo(ejecutar_pronto=False)
+            minutos = max(1, self.intervalo_ciclo_actual() // 60)
             await self.enviar_mensaje_admin(
-                f"🔚 Modo <b>{_estado_evento.nombre}</b> finalizado."
+                f"🔚 Modo evento <b>{html.escape(expirado)}</b> finalizado.\n"
+                f"Se restauró el ciclo normal cada {minutos} min."
             )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error revisando expiración del evento: %s", exc)
 
     async def _tarea_heartbeat(self, context=None) -> None:
         try:
