@@ -244,6 +244,39 @@ def gancho_respaldo(titulo: str, precio: str, original: Optional[str]) -> str:
     return "Oferta interesante para revisar."
 
 
+_JERGA_MARCADA = (
+    "klk",
+    "jevi",
+    "jevy",
+    "nítido",
+    "nitido",
+    "tíguere",
+    "tiguere",
+    "tigueraje",
+    "manin",
+    "ma'ni",
+    "compai",
+    "compadre",
+    "qué lo qué",
+    "que lo que",
+    "dímelo",
+    "dimelo",
+    "singao",
+    "de pinga",
+    "chévere",
+    "chevere",
+    "vaina",
+    "manito",
+)
+_JERGA_MAXIMA = 2  # más marcas que esto en una frase = jerga metida a la fuerza
+
+
+def _jerga_forzada(texto: str) -> bool:
+    """Detecta el gancho donde la jerga se amontonó en vez de salir natural."""
+    bajo = texto.lower()
+    return sum(1 for marca in _JERGA_MARCADA if marca in bajo) > _JERGA_MAXIMA
+
+
 def _limpiar_gancho(texto: Optional[str]) -> Optional[str]:
     if not texto:
         return None
@@ -251,6 +284,9 @@ def _limpiar_gancho(texto: Optional[str]) -> Optional[str]:
     if limpio.startswith('"') and limpio.endswith('"') and len(limpio) > 1:
         limpio = limpio[1:-1].strip()
     limpio = re.sub(r"<[^>]+>", "", limpio)
+    if _jerga_forzada(limpio):
+        logger.info("Gancho descartado por exceso de jerga: %r", limpio[:120])
+        return None
     if len(limpio) > 180:
         limpio = limpio[:179].rstrip() + "…"
     if len(limpio) < 15:
@@ -310,7 +346,7 @@ async def fallback_groq(
                         {"role": "user", "content": prompt},
                     ],
                     model=modelo,
-                    temperature=0.7,
+                    temperature=0.4,
                     max_tokens=600,
                 ),
                 timeout=getattr(Config, "GROQ_CALL_TIMEOUT_SECONDS", 20),
@@ -335,7 +371,8 @@ def _config_para_modelo(
     """Construye la configuración; thinking solo cuando se pide y el modelo lo admite."""
     params: dict[str, object] = {
         "system_instruction": system_instruction,
-        "temperature": 0.7,
+        # Baja temperatura: datos concretos y frases coherentes, no ingenio.
+        "temperature": 0.4,
         "max_output_tokens": 350,
     }
     if (
@@ -435,34 +472,71 @@ def limpiar_cache_ia() -> None:
     _cache.clear()
 
 
+_RE_PRECIO = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
+_SIN_PRECIO = ("", "no disponible", "n/a", "unknown")
+
+
+def _precio_en_numero(valor: Optional[str]) -> Optional[float]:
+    """Extrae el valor numérico de un precio tipo '$1,299.00'."""
+    if valor is None or str(valor).strip().lower() in _SIN_PRECIO:
+        return None
+    coincidencia = _RE_PRECIO.search(str(valor).replace(" ", ""))
+    if not coincidencia:
+        return None
+    try:
+        return float(coincidencia.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _descuento_porcentaje(
+    precio: Optional[str], original: Optional[str]
+) -> Optional[int]:
+    """Descuento aproximado; solo si ambos precios son numéricos y tiene sentido."""
+    actual = _precio_en_numero(precio)
+    antes = _precio_en_numero(original)
+    if not actual or not antes or antes <= 0 or actual >= antes:
+        return None
+    porcentaje = round((1 - actual / antes) * 100)
+    return porcentaje if 1 <= porcentaje <= 95 else None
+
+
 def _prompt_oferta(titulo: str, precio: str, original: Optional[str]) -> str:
-    precio_str = (
-        f"Precio en oferta: {precio}"
-        if precio and precio != "No disponible"
-        else "Precio desconocido"
-    )
-    original_str = (
-        f"Precio original: {original}"
-        if original and str(original).lower() != "no disponible"
-        else ""
-    )
-    return f"Producto: {limpiar_titulo(titulo)}\n{precio_str}\n{original_str}"
+    """Datos reales de la oferta: es lo único que la IA puede afirmar."""
+    lineas = [f"Producto: {limpiar_titulo(titulo)}"]
+    if precio and str(precio).strip().lower() not in _SIN_PRECIO:
+        lineas.append(f"Precio en oferta: {precio}")
+    else:
+        lineas.append("Precio desconocido")
+    if original and str(original).strip().lower() not in _SIN_PRECIO:
+        lineas.append(f"Precio original: {original}")
+        descuento = _descuento_porcentaje(precio, original)
+        if descuento:
+            lineas.append(f"Descuento aproximado: {descuento}%")
+    return "\n".join(lineas)
 
 
 _ESTILO_DOMINICANO = (
-    "Eres un carismático dominicano que comparte buenas ofertas en Telegram. "
-    "IMPORTANTE: Tú NO estás vendiendo el producto, simplemente estás compartiendo o comentando "
-    "sobre una oferta interesante que viste en internet. Háblalo de forma natural, como si "
-    "le pasaras el dato a un amigo. "
-    "Usa jerga dominicana natural (con tigueraje verdadero dominicano, 100% dominicano, klk, jevi, nítido). "
-    "No uses acentos de otros países, cero palabras como 'che', 'chama', 'órale' o 'wey'. Solo vocabulario de RD. "
-    "Asegúrate de tener SENTIDO LÓGICO: comenta algo específico del producto que estás compartiendo. "
-    "NO inventes características ni prometas nada que no esté en el texto. "
+    "Eres el dueño de un canal dominicano de ofertas en Telegram. Le escribes a tu "
+    "gente de tú a tú, como quien pasa el dato: cercano, directo y sin teatro. "
+    "Tu español es dominicano y neutro; la jerga es OPCIONAL, no una cuota. "
+    "Si una expresión coloquial cae sola, úsala (una sola por frase); si no encaja, "
+    "escribe claro y ya. NUNCA metas palabras como 'klk', 'jevi', 'nítido', 'tíguere' "
+    "o 'manin' solo por sonar dominicano: eso suena forzado y le quita seriedad al dato. "
+    "PROHIBIDO inventar. Solo puedes afirmar lo que aparece en los datos de la oferta "
+    "(tipo de producto, precio y precio original). No inventes características, "
+    "materiales, tamaños, garantías, envíos, vendedor ni stock; no digas que lo "
+    "compraste, que te llegó o que lo probaste; no compares con otros productos; "
+    "no prometas nada ni exageres con 'el mejor del mercado' o similares. "
+    "Si del producto solo sabes el nombre, comenta el precio, no el producto. "
+    "Cada frase debe tener sentido completo y decir algo concreto: nada de relleno. "
 )
 
 _INSTRUCCION_GANCHO = (
     _ESTILO_DOMINICANO
-    + "Crea UNA SOLA oración corta, directa, clara y usa máximo 1 emoji al final."
+    + "Devuelve UNA sola oración de 100 caracteres como máximo, con máximo 1 emoji al "
+    "final. No repitas el nombre del producto palabra por palabra (el título ya va "
+    "arriba). Sin comillas, sin hashtags y sin explicar nada más."
 )
 
 _INSTRUCCION_PUBLICACION = (
@@ -473,7 +547,8 @@ _INSTRUCCION_PUBLICACION = (
     "material, función, color, público); NUNCA devuelvas el título igual que en inglés. "
     "Solo mantén sin traducir marcas, modelos, medidas, capacidades y cantidades "
     "exactamente como vienen. No incluyas precio ni envío.\n"
-    "GANCHO: UNA SOLA oración corta con tu estilo, máximo 1 emoji al final.\n"
+    "GANCHO: UNA sola oración de 100 caracteres como máximo, con máximo 1 emoji al "
+    "final. No repitas el TITULO palabra por palabra.\n"
     "Ejemplos de TITULO:\n"
     "Sony WH-1000XM5 Wireless Noise Cancelling Headphones -> "
     "Audífonos inalámbricos Sony WH-1000XM5 con cancelación de ruido\n"

@@ -1,5 +1,16 @@
 from config import Config
-from utils.ai_helper import _limpiar_gancho, gancho_respaldo, generar_gancho
+from utils.ai_helper import (
+    _INSTRUCCION_GANCHO,
+    _INSTRUCCION_PUBLICACION,
+    _descuento_porcentaje,
+    _jerga_forzada,
+    _limpiar_gancho,
+    _precio_en_numero,
+    _prompt_oferta,
+    gancho_respaldo,
+    generar_gancho,
+    parsear_publicacion,
+)
 
 
 def _sin_ia(monkeypatch):
@@ -51,3 +62,88 @@ def test_gancho_con_emoji_final_no_lleva_punto_pegado():
     assert _limpiar_gancho("Ese precio está nítido, míralo 😎") == "Ese precio está nítido, míralo 😎"
     assert _limpiar_gancho("Ese precio está nítido, míralo") == "Ese precio está nítido, míralo."
     assert _limpiar_gancho("Ese precio está nítido, míralo!") == "Ese precio está nítido, míralo!"
+
+
+# ---------------------------------------------------------------- jerga forzada
+def test_jerga_forzada_permite_una_o_dos_palabras():
+    assert not _jerga_forzada("Ese SSD está nítido, klk.")
+    assert not _jerga_forzada("Klk, mira este precio.")
+    assert not _jerga_forzada("Precio de hoy: $249. Venía de $399.")
+
+
+def test_jerga_forzada_detecta_amontonamiento():
+    assert _jerga_forzada(
+        "Klk mi hermano, jevi que esto está nítido, manin, un tiguere de oferta."
+    )
+    assert _jerga_forzada("Jevi, qué vaina tan nítida, klk.")
+
+
+def test_gancho_con_jerga_amontonada_se_descarta():
+    assert (
+        _limpiar_gancho("Klk, jevi, eso está nítido, manin, no hay vaina mejor.") is None
+    )
+
+
+def test_publicacion_descarta_gancho_con_jerga_amontonada():
+    texto = (
+        "TITULO: Audífonos Sony WH-1000XM5 con cancelación de ruido\n"
+        "GANCHO: Klk, jevi, eso está nítido, manin, no hay vaina mejor."
+    )
+    assert parsear_publicacion(texto, "Sony WH-1000XM5 Wireless Headphones") is None
+
+    limpio = (
+        "TITULO: Audífonos Sony WH-1000XM5 con cancelación de ruido\n"
+        "GANCHO: Bajaron casi 40%, si andabas buscando unos, este es el momento 🎧"
+    )
+    publicacion = parsear_publicacion(limpio, "Sony WH-1000XM5 Wireless Headphones")
+    assert publicacion is not None
+    assert publicacion.titulo_es.startswith("Audífonos Sony")
+
+
+# ---------------------------------------------------------------- precio y descuento
+def test_precio_en_numero_entiende_formatos_comunes():
+    assert _precio_en_numero("$249.99") == 249.99
+    assert _precio_en_numero("US$ 1,299.00") == 1299.0
+    assert _precio_en_numero("$1,099") == 1099.0
+    assert _precio_en_numero("No disponible") is None
+    assert _precio_en_numero(None) is None
+    assert _precio_en_numero("gratis") is None
+
+
+def test_descuento_porcentaje():
+    assert _descuento_porcentaje("$249.99", "$399.99") == 38
+    assert _descuento_porcentaje("$100", "$100") is None
+    assert _descuento_porcentaje("$120", "$100") is None
+    assert _descuento_porcentaje("No disponible", "$100") is None
+    assert _descuento_porcentaje("$0", "$100") is None
+
+
+def test_prompt_incluye_descuento_calculado():
+    prompt = _prompt_oferta("Sony WH-1000XM5 Headphones", "$249.99", "$399.99")
+    assert "Producto: Sony WH-1000XM5 Headphones" in prompt
+    assert "Precio en oferta: $249.99" in prompt
+    assert "Precio original: $399.99" in prompt
+    assert "Descuento aproximado: 38%" in prompt
+
+
+def test_prompt_sin_precio_ni_descuento():
+    prompt = _prompt_oferta("Producto raro", "No disponible", None)
+    assert "Precio desconocido" in prompt
+    assert "Descuento" not in prompt
+
+
+# ---------------------------------------------------------------- el prompt ya no exige jerga
+def test_el_prompt_ya_no_obliga_a_usar_jerga():
+    for instruccion in (_INSTRUCCION_GANCHO, _INSTRUCCION_PUBLICACION):
+        assert "Usa jerga dominicana natural" not in instruccion
+        assert "100% dominicano" not in instruccion
+        assert "tigueraje verdadero" not in instruccion
+        # Sí conserva la identidad y la prohibición de inventar.
+        assert "OPCIONAL" in instruccion
+        assert "PROHIBIDO inventar" in instruccion
+
+
+def test_el_prompt_limita_longitud_y_evita_repetir_el_titulo():
+    assert "100 caracteres como máximo" in _INSTRUCCION_GANCHO
+    assert "No repitas el nombre del producto" in _INSTRUCCION_GANCHO
+    assert "No repitas el TITULO" in _INSTRUCCION_PUBLICACION
