@@ -22,6 +22,7 @@ def setup_handlers(application, bot) -> None:
     application.add_handler(CommandHandler("start", comando_ayuda))
     application.add_handler(CommandHandler("ayuda", comando_ayuda))
     application.add_handler(CommandHandler("estado", obtener_estado))
+    application.add_handler(CommandHandler("stats", comando_stats))
     application.add_handler(CommandHandler("diagnostico", diagnostico))
     application.add_handler(CommandHandler("test_ia", test_ia))
     application.add_handler(CommandHandler("habilitar", habilitar_fuente))
@@ -114,7 +115,8 @@ async def obtener_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']} · "
         f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']} · "
         f"Duplicadas: {stats.get('duplicadas', 0)} · "
-        f"Excluidas: {stats.get('excluidas', 0)}"
+        f"Excluidas: {stats.get('excluidas', 0)} · "
+        f"Cola: {stats.get('cola', 0)}"
     )
     if hasattr(bot, "evento"):
         res_ev = bot.evento.resumen()
@@ -126,6 +128,82 @@ async def obtener_estado(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"pub {res_ev['pub_usadas_hoy']}/{res_ev['pub_max_dia']} · "
                 f"IA {res_ev['ia_usadas_hoy']}/{res_ev['ia_max_dia']})"
             )
+    await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
+
+
+@admin_required
+async def comando_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bot = context.bot_data["bot"]
+    db = bot.db_manager
+
+    stats = await db.estadisticas()
+    por_fuente = await db.contar_por_fuente("enviada")
+    ventana = await db.contar_ventana(24)
+    top = await db.top_ofertas_descuento(5, dias=7)
+    publicadas = sum(por_fuente.values())
+
+    lineas = ["📊 <b>Estadísticas</b>", ""]
+    lineas.append(
+        f"Publicadas: <b>{publicadas}</b> · "
+        f"En cola: <b>{stats.get('cola', 0)}</b> · "
+        f"Suscripciones: <b>{stats.get('suscripciones', 0)}</b>"
+    )
+    lineas.append(
+        f"Total en base: {stats.get('ofertas', 0)} · "
+        f"Duplicadas: {stats.get('duplicadas', 0)} · "
+        f"Excluidas: {stats.get('excluidas', 0)} · "
+        f"Fallidas: {stats.get('fallidas', 0)} · "
+        f"Caducadas: {stats.get('expiradas', 0)}"
+    )
+
+    if por_fuente:
+        lineas.append("")
+        lineas.append("<b>Publicadas por fuente:</b>")
+        for fuente, total in list(por_fuente.items())[:8]:
+            lineas.append(f"• <code>{html.escape(fuente)}</code>: {total}")
+
+    lineas.append("")
+    lineas.append("<b>Últimas 24 h:</b>")
+    lineas.append(
+        f"Enviadas {ventana.get('enviada', 0)} · "
+        f"Duplicadas {ventana.get('duplicada', 0)} · "
+        f"Excluidas {ventana.get('excluida', 0)} · "
+        f"Fallidas {ventana.get('fallida', 0)}"
+    )
+
+    if top:
+        lineas.append("")
+        lineas.append("<b>🔥 Mayores descuentos (7 días):</b>")
+        for posicion, oferta in enumerate(top, start=1):
+            titulo = html.escape((oferta["titulo"] or "")[:70], quote=False)
+            precios = html.escape(
+                f"{oferta['precio']} / antes {oferta['precio_original']}", quote=False
+            )
+            lineas.append(
+                f"{posicion}. <b>{oferta['descuento']:.0f}%</b> — {titulo} "
+                f"<code>{precios}</code>"
+            )
+
+    lineas.append("")
+    if hasattr(bot, "evento"):
+        resumen = bot.evento.resumen()
+        if resumen["activo"]:
+            lineas.append(
+                f"<b>Modo evento:</b> activo ({html.escape(resumen['etiqueta'])}) · "
+                f"hoy {resumen['pub_usadas_hoy']}/{resumen['pub_max_dia']} publicaciones · "
+                f"IA {resumen['ia_usadas_hoy']}/{resumen['ia_max_dia']}"
+            )
+        else:
+            lineas.append("<b>Modo evento:</b> inactivo")
+
+    estado = estado_ia()
+    if estado.get("exitos") or estado.get("fallos"):
+        lineas.append(
+            f"IA: {estado.get('exitos', 0)} OK · {estado.get('fallos', 0)} fallos · "
+            f"último proveedor "
+            f"<code>{html.escape(str(estado.get('ultimo_proveedor') or 'n/a'))}</code>"
+        )
+
     await update.message.reply_text("\n".join(lineas), parse_mode="HTML")
 
 
@@ -156,7 +234,8 @@ async def diagnostico(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"Ofertas: {stats['ofertas']} · Suscripciones: {stats['suscripciones']}",
         f"Pendientes: {stats['pendientes']} · Fallidas: {stats['fallidas']} · "
         f"Duplicadas: {stats.get('duplicadas', 0)} · "
-        f"Excluidas: {stats.get('excluidas', 0)}",
+        f"Excluidas: {stats.get('excluidas', 0)} · "
+        f"Cola: {stats.get('cola', 0)}",
         "Imágenes: "
         f"URL {imagenes.get('url', 0)} · descargadas {imagenes.get('descargada', 0)} · "
         f"respaldo {imagenes.get('placeholder', 0)} · texto {imagenes.get('texto', 0)}",

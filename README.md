@@ -102,6 +102,7 @@ propietario del volumen `/data` antes de bajar privilegios con `gosu`.
 | `/borrar_alerta <palabra>` | Todos | Elimina una alerta |
 | `/borrar_mis_datos` | Todos | Borra todas las suscripciones |
 | `/estado` | Admin | Fuentes, último ciclo y totales |
+| `/stats` | Admin | Publicadas por fuente, últimas 24 h, mayores descuentos y uso de IA |
 | `/diagnostico` | Admin | IA, base de datos, pendientes, webhook y errores |
 | `/test_ia` | Admin | Prueba real de IA y muestra el proveedor o el error |
 | `/habilitar`, `/deshabilitar` | Admin | Cambian fuentes y lo persisten |

@@ -6,16 +6,21 @@ import os
 import sqlite3
 import time
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiosqlite
 
 from utils.models import Oferta
+from utils.scoring import calcular_descuento
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
+
+# Estados propios del backlog de ofertas.
+ESTADO_EN_COLA = "en_cola"
+ESTADO_EXPIRADA = "expirada"
 
 # Parámetros de seguimiento que no cambian el producto y generan duplicados.
 TRACKING_PARAMS = {
@@ -284,6 +289,158 @@ class DBManager:
             )
             await conn.commit()
 
+    # ------------------------------------------------------------- cola de pendientes
+    async def encolar_ofertas(self, ofertas: Sequence[Oferta]) -> int:
+        """
+        Guarda ofertas para un ciclo posterior en vez de descartarlas.
+
+        Se marcan con estado propio ('en_cola') para que el filtro de duplicados
+        las siga tratando como conocidas y no se publiquen dos veces.
+        """
+        guardadas = 0
+        for oferta in ofertas:
+            try:
+                await self.guardar_oferta(oferta, estado=ESTADO_EN_COLA)
+                guardadas += 1
+            except Exception as exc:  # noqa: BLE001 - una oferta no frena el ciclo
+                logger.error(
+                    "No se pudo encolar la oferta %r: %s",
+                    (oferta.titulo or "")[:60],
+                    exc,
+                )
+        return guardadas
+
+    async def obtener_en_cola(
+        self, limite: int, max_edad_segundos: int
+    ) -> List[Dict[str, Any]]:
+        """Ofertas en cola todavía vigentes, de la más reciente a la más antigua."""
+        if limite <= 0:
+            return []
+        corte = int(time.time()) - max_edad_segundos
+        async with self._conexion() as conn:
+            cursor = await conn.execute(
+                "SELECT id, titulo, precio, precio_original, link, imagen, tag, "
+                "cupon, info_cupon, timestamp FROM ofertas "
+                "WHERE estado = ? AND timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (ESTADO_EN_COLA, corte, limite),
+            )
+            return [
+                {
+                    "id": fila[0],
+                    "titulo": fila[1],
+                    "precio": fila[2],
+                    "precio_original": fila[3],
+                    "link": fila[4],
+                    "imagen": fila[5],
+                    "tag": fila[6],
+                    "cupon": fila[7],
+                    "info_cupon": fila[8],
+                    "timestamp": fila[9],
+                }
+                for fila in await cursor.fetchall()
+            ]
+
+    async def expirar_cola(self, max_edad_segundos: int) -> int:
+        """Marca como expiradas las ofertas que llevan demasiado tiempo en cola."""
+        corte = int(time.time()) - max_edad_segundos
+        async with self._conexion() as conn:
+            cursor = await conn.execute(
+                "UPDATE ofertas SET estado = ? WHERE estado = ? AND timestamp < ?",
+                (ESTADO_EXPIRADA, ESTADO_EN_COLA, corte),
+            )
+            expiradas = cursor.rowcount
+            await conn.commit()
+        if expiradas:
+            logger.info("Ofertas caducadas de la cola: %s", expiradas)
+        return expiradas
+
+    async def descartar_de_cola(self, oferta_id: str) -> None:
+        """Saca de la cola una oferta que ya no debe publicarse."""
+        async with self._conexion() as conn:
+            await conn.execute(
+                "UPDATE ofertas SET estado = ? WHERE id = ? AND estado = ?",
+                (ESTADO_EXPIRADA, oferta_id, ESTADO_EN_COLA),
+            )
+            await conn.commit()
+
+    async def contar_en_cola(self) -> int:
+        async with self._conexion() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM ofertas WHERE estado = ?", (ESTADO_EN_COLA,)
+            )
+            fila = await cursor.fetchone()
+            return int(fila[0]) if fila else 0
+
+    # ----------------------------------------------------------------------- métricas
+    async def contar_por_fuente(self, estado: str = "enviada") -> Dict[str, int]:
+        """
+        Ofertas agrupadas por fuente (tag), de mayor a menor.
+
+        El tag guardado puede llevar la etiqueta del evento ('#DealNews 🔥 #BlackFriday'),
+        así que se agrupa por la fuente limpia para no partir el conteo.
+        """
+        async with self._conexion() as conn:
+            cursor = await conn.execute(
+                "SELECT COALESCE(NULLIF(tag, ''), 'sin_fuente'), COUNT(*) "
+                "FROM ofertas WHERE estado = ? GROUP BY 1",
+                (estado,),
+            )
+            filas = await cursor.fetchall()
+
+        totales: Dict[str, int] = {}
+        for tag, total in filas:
+            base = " ".join(str(tag or "").split("🔥")[0].split()).strip()
+            clave = base or "sin_fuente"
+            totales[clave] = totales.get(clave, 0) + int(total)
+        return dict(
+            sorted(totales.items(), key=lambda item: item[1], reverse=True)
+        )
+
+    async def contar_ventana(self, horas: int) -> Dict[str, int]:
+        """Ofertas por estado dentro de las últimas horas."""
+        corte = int(time.time()) - max(1, horas) * 3600
+        async with self._conexion() as conn:
+            cursor = await conn.execute(
+                "SELECT estado, COUNT(*) FROM ofertas WHERE timestamp >= ? "
+                "GROUP BY estado",
+                (corte,),
+            )
+            return {
+                (fila[0] or "enviada"): int(fila[1]) for fila in await cursor.fetchall()
+            }
+
+    async def top_ofertas_descuento(
+        self, limite: int = 5, dias: int = 7
+    ) -> List[Dict[str, Any]]:
+        """Ofertas publicadas con mayor descuento real en los últimos días."""
+        corte = int(time.time()) - max(1, dias) * 86400
+        async with self._conexion() as conn:
+            cursor = await conn.execute(
+                "SELECT titulo, precio, precio_original, tag, timestamp FROM ofertas "
+                "WHERE estado = 'enviada' AND timestamp >= ?",
+                (corte,),
+            )
+            filas = await cursor.fetchall()
+
+        con_descuento: List[Dict[str, Any]] = []
+        for titulo, precio, original, tag, timestamp in filas:
+            descuento = calcular_descuento(precio, original)
+            if descuento is None:
+                continue
+            con_descuento.append(
+                {
+                    "titulo": titulo,
+                    "precio": precio,
+                    "precio_original": original,
+                    "tag": tag,
+                    "timestamp": timestamp,
+                    "descuento": descuento,
+                }
+            )
+        con_descuento.sort(key=lambda fila: fila["descuento"], reverse=True)
+        return con_descuento[: max(0, limite)]
+
     async def obtener_indices_existentes(self) -> Tuple[Set[str], Set[str]]:
         """
         Devuelve (ids_conocidos, urls_canonicas) para el filtro de duplicados.
@@ -467,6 +624,10 @@ class DBManager:
                 "fallidas": "SELECT COUNT(*) FROM ofertas WHERE estado = 'fallida'",
                 "duplicadas": "SELECT COUNT(*) FROM ofertas WHERE estado = 'duplicada'",
                 "excluidas": "SELECT COUNT(*) FROM ofertas WHERE estado = 'excluida'",
+                "cola": f"SELECT COUNT(*) FROM ofertas WHERE estado = '{ESTADO_EN_COLA}'",
+                "expiradas": (
+                    f"SELECT COUNT(*) FROM ofertas WHERE estado = '{ESTADO_EXPIRADA}'"
+                ),
             }.items():
                 cursor = await conn.execute(consulta)
                 fila = await cursor.fetchone()

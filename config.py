@@ -65,6 +65,14 @@ class Config:
     EVENTO_MAX_IA_DIA = _env_int("EVENTO_MAX_IA_DIA", 350)
     EVENTO_HORAS_DEFECTO = _env_int("EVENTO_HORAS_DEFECTO", 72)
 
+    # Cola de pendientes: ofertas buenas que no entraron por el tope del ciclo.
+    COLA_PENDIENTES_ACTIVA = _env_bool("COLA_PENDIENTES_ACTIVA", True)
+    COLA_PENDIENTES_MAX = _env_int("COLA_PENDIENTES_MAX", 40)
+    COLA_PENDIENTES_TTL_HORAS = _env_int("COLA_PENDIENTES_TTL_HORAS", 24)
+    COLA_PENDIENTES_TTL_HORAS_EVENTO = _env_int(
+        "COLA_PENDIENTES_TTL_HORAS_EVENTO", 6
+    )
+
     # IA
     GEMINI_API_KEYS = os.getenv("GEMINI_API_KEYS", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

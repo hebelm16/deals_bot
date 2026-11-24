@@ -46,7 +46,12 @@ from utils.health_server import start_health_server
 from utils.images import ImagenDescargada, resolver_imagen
 from utils.keywords import compilar_patron
 from utils.models import Oferta
-from utils.scoring import seleccionar_mejores, son_duplicados
+from utils.scoring import (
+    calcular_descuento,
+    parsear_precio,
+    seleccionar_mejores,
+    son_duplicados,
+)
 
 logger = logging.getLogger("OfertasBot")
 
@@ -200,6 +205,7 @@ class OfertasBot:
             BotCommand("mis_alertas", "Mira tus palabras suscritas"),
             BotCommand("borrar_alerta", "Elimina una alerta existente"),
             BotCommand("estado", "Estado de fuentes y ciclo (Admin)"),
+            BotCommand("stats", "Estadísticas de publicación (Admin)"),
             BotCommand("diagnostico", "Diagnóstico técnico (Admin)"),
             BotCommand("test_ia", "Prueba la conexión con la IA (Admin)"),
             BotCommand("evento", "Activa o consulta el modo evento (Admin)"),
@@ -541,9 +547,11 @@ class OfertasBot:
                 )
 
         enviadas = 0
-        for oferta in seleccionadas:
+        no_enviadas: List[Oferta] = []
+        for indice, oferta in enumerate(seleccionadas):
             if deadline is not None and time.monotonic() > deadline:
                 logger.warning("Presupuesto del ciclo agotado; quedan ofertas sin publicar")
+                no_enviadas.extend(seleccionadas[indice:])
                 break
 
             publicacion = await self._generar_gancho(oferta)
@@ -580,7 +588,112 @@ class OfertasBot:
             logger.info("Oferta publicada: %s (%s)", oferta.titulo, oferta.tag)
             await self._enviar_alertas(oferta, patrones)
             await asyncio.sleep(max(1, self.config.SEND_OFFER_INTERVAL_SECONDS))
+
+        # Lo que no cupo en este ciclo no se tira: queda en cola para el siguiente.
+        await self._encolar_sobrantes(new_deals_by_source, seleccionadas, no_enviadas)
         return enviadas
+
+    # --------------------------------------------------------------- cola de pendientes
+    def _ttl_cola_segundos(self) -> int:
+        horas = (
+            self.config.COLA_PENDIENTES_TTL_HORAS_EVENTO
+            if self.evento.esta_activo()
+            else self.config.COLA_PENDIENTES_TTL_HORAS
+        )
+        return max(1, int(horas)) * 3600
+
+    @staticmethod
+    def _fuente_de_tag(tag: Optional[str]) -> str:
+        """'#DealNews' -> 'dealnews', para reagrupar la cola junto a su fuente."""
+        limpio = (tag or "").strip().lower().lstrip("#")
+        return limpio or "cola"
+
+    async def _ofertas_en_cola(self) -> Dict[str, List[Oferta]]:
+        """Recupera la cola vigente, agrupada por fuente, para publicarla ahora."""
+        if not getattr(self.config, "COLA_PENDIENTES_ACTIVA", True):
+            return {}
+        ttl = self._ttl_cola_segundos()
+        await self.db_manager.expirar_cola(ttl)
+        filas = await self.db_manager.obtener_en_cola(
+            int(getattr(self.config, "COLA_PENDIENTES_MAX", 40)), ttl
+        )
+        if not filas:
+            return {}
+
+        agrupadas: Dict[str, List[Oferta]] = {}
+        for fila in filas:
+            oferta = Oferta(
+                titulo=fila["titulo"],
+                precio=fila["precio"] or "No disponible",
+                link=fila["link"],
+                tag=fila["tag"] or "",
+                timestamp=int(fila["timestamp"] or time.time()),
+                precio_original=fila["precio_original"],
+                imagen=fila["imagen"],
+                cupon=fila["cupon"],
+                info_cupon=fila["info_cupon"],
+            )
+            agrupadas.setdefault(self._fuente_de_tag(oferta.tag), []).append(oferta)
+        logger.info("Ofertas recuperadas de la cola: %s", len(filas))
+        return agrupadas
+
+    async def _encolar_sobrantes(
+        self,
+        ofertas_por_fuente: Dict[str, List[Oferta]],
+        seleccionadas: List[Oferta],
+        no_enviadas: Optional[List[Oferta]] = None,
+    ) -> int:
+        """Guarda para el próximo ciclo las mejores ofertas que no se publicaron."""
+        if not getattr(self.config, "COLA_PENDIENTES_ACTIVA", True):
+            return 0
+        maximo = int(getattr(self.config, "COLA_PENDIENTES_MAX", 40))
+        capacidad = maximo - await self.db_manager.contar_en_cola()
+        if capacidad <= 0:
+            return 0
+
+        ya_elegidas = {id(oferta) for oferta in seleccionadas}
+        candidatas: List[Oferta] = list(no_enviadas or [])
+        for ofertas in ofertas_por_fuente.values():
+            candidatas.extend(
+                oferta for oferta in ofertas if id(oferta) not in ya_elegidas
+            )
+
+        validas: List[Oferta] = []
+        vistos: set[str] = set()
+        umbral = self.config.SIMILITUD_TITULOS_MINIMA
+        for oferta in candidatas:
+            if parsear_precio(oferta.precio) is None:
+                continue
+            # No se encola lo que ya se guardó como duplicada de una publicada.
+            if any(
+                id(elegida) != id(oferta)
+                and son_duplicados(oferta.titulo, elegida.titulo, umbral)
+                for elegida in seleccionadas
+            ):
+                continue
+            clave = canonicalizar_link(oferta.link)
+            if not clave or clave in vistos:
+                continue
+            vistos.add(clave)
+            validas.append(oferta)
+
+        # Las de mayor descuento primero: si la cola se llena, se pierden las peores.
+        validas.sort(
+            key=lambda oferta: calcular_descuento(
+                oferta.precio, oferta.precio_original
+            )
+            or 0.0,
+            reverse=True,
+        )
+        guardadas = await self.db_manager.encolar_ofertas(validas[:capacidad])
+        if guardadas:
+            logger.info(
+                "Ofertas guardadas en cola para el próximo ciclo: %s (capacidad %s/%s)",
+                guardadas,
+                await self.db_manager.contar_en_cola(),
+                maximo,
+            )
+        return guardadas
 
     def _teclado(self, oferta: Oferta) -> Optional[InlineKeyboardMarkup]:
         link = (oferta.link or "").strip()
@@ -867,6 +980,11 @@ class OfertasBot:
                     )
                 scraped = await self._scrape_all_sources()
                 nuevas = await self._filter_new_deals(scraped)
+                # La cola entra en el mismo ranking que lo recién raspado, así
+                # no se queda vieja esperando y tampoco tapa las ofertas nuevas.
+                en_cola = await self._ofertas_en_cola()
+                for nombre, ofertas in en_cola.items():
+                    nuevas[nombre] = ofertas + nuevas.get(nombre, [])
                 enviadas = await self._process_new_deals(nuevas, deadline=deadline)
                 limpiadas = await self.db_manager.limpiar_ofertas_antiguas(
                     dias=self.config.DIAS_LIMPIEZA_OFERTAS_ANTIGUAS
@@ -878,7 +996,8 @@ class OfertasBot:
 
             total_nuevas = sum(len(ofertas) for ofertas in nuevas.values())
             detalle = (
-                f"nuevas={total_nuevas} enviadas={enviadas} limpiadas={limpiadas}"
+                f"nuevas={total_nuevas} enviadas={enviadas} limpiadas={limpiadas} "
+                f"cola={await self.db_manager.contar_en_cola()}"
             )
             self._salud["last_cycle_ts"] = int(time.time())
             self._salud["last_cycle_ok"] = True
