@@ -2,10 +2,9 @@ from config import Config
 from utils.ai_helper import (
     _INSTRUCCION_GANCHO,
     _INSTRUCCION_PUBLICACION,
-    _descuento_porcentaje,
+    _hay_precio,
     _jerga_forzada,
     _limpiar_gancho,
-    _precio_en_numero,
     _prompt_oferta,
     gancho_respaldo,
     generar_gancho,
@@ -101,21 +100,12 @@ def test_publicacion_descarta_gancho_con_jerga_amontonada():
 
 
 # ---------------------------------------------------------------- precio y descuento
-def test_precio_en_numero_entiende_formatos_comunes():
-    assert _precio_en_numero("$249.99") == 249.99
-    assert _precio_en_numero("US$ 1,299.00") == 1299.0
-    assert _precio_en_numero("$1,099") == 1099.0
-    assert _precio_en_numero("No disponible") is None
-    assert _precio_en_numero(None) is None
-    assert _precio_en_numero("gratis") is None
-
-
-def test_descuento_porcentaje():
-    assert _descuento_porcentaje("$249.99", "$399.99") == 38
-    assert _descuento_porcentaje("$100", "$100") is None
-    assert _descuento_porcentaje("$120", "$100") is None
-    assert _descuento_porcentaje("No disponible", "$100") is None
-    assert _descuento_porcentaje("$0", "$100") is None
+def test_hay_precio_ignora_marcadores_de_ausencia():
+    assert _hay_precio("$249.99")
+    assert not _hay_precio("No disponible")
+    assert not _hay_precio("n/a")
+    assert not _hay_precio("   ")
+    assert not _hay_precio(None)
 
 
 def test_prompt_incluye_descuento_calculado():

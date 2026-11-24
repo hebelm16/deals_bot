@@ -12,6 +12,7 @@ from typing import Callable, NamedTuple, Optional
 import httpx
 
 from config import Config
+from utils.scoring import calcular_descuento
 from utils.text import limpiar_titulo
 
 try:
@@ -472,47 +473,26 @@ def limpiar_cache_ia() -> None:
     _cache.clear()
 
 
-_RE_PRECIO = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 _SIN_PRECIO = ("", "no disponible", "n/a", "unknown")
 
 
-def _precio_en_numero(valor: Optional[str]) -> Optional[float]:
-    """Extrae el valor numérico de un precio tipo '$1,299.00'."""
-    if valor is None or str(valor).strip().lower() in _SIN_PRECIO:
-        return None
-    coincidencia = _RE_PRECIO.search(str(valor).replace(" ", ""))
-    if not coincidencia:
-        return None
-    try:
-        return float(coincidencia.group(1).replace(",", ""))
-    except ValueError:
-        return None
-
-
-def _descuento_porcentaje(
-    precio: Optional[str], original: Optional[str]
-) -> Optional[int]:
-    """Descuento aproximado; solo si ambos precios son numéricos y tiene sentido."""
-    actual = _precio_en_numero(precio)
-    antes = _precio_en_numero(original)
-    if not actual or not antes or antes <= 0 or actual >= antes:
-        return None
-    porcentaje = round((1 - actual / antes) * 100)
-    return porcentaje if 1 <= porcentaje <= 95 else None
+def _hay_precio(valor: Optional[str]) -> bool:
+    """True si el campo trae un precio usable y no un marcador de ausencia."""
+    return valor is not None and str(valor).strip().lower() not in _SIN_PRECIO
 
 
 def _prompt_oferta(titulo: str, precio: str, original: Optional[str]) -> str:
     """Datos reales de la oferta: es lo único que la IA puede afirmar."""
     lineas = [f"Producto: {limpiar_titulo(titulo)}"]
-    if precio and str(precio).strip().lower() not in _SIN_PRECIO:
+    if _hay_precio(precio):
         lineas.append(f"Precio en oferta: {precio}")
     else:
         lineas.append("Precio desconocido")
-    if original and str(original).strip().lower() not in _SIN_PRECIO:
+    if _hay_precio(original):
         lineas.append(f"Precio original: {original}")
-        descuento = _descuento_porcentaje(precio, original)
+        descuento = calcular_descuento(precio, original)
         if descuento:
-            lineas.append(f"Descuento aproximado: {descuento}%")
+            lineas.append(f"Descuento aproximado: {round(descuento)}%")
     return "\n".join(lineas)
 
 
